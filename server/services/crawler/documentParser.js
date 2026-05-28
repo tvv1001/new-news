@@ -505,12 +505,14 @@ async function fetchBinaryResponse(url) {
 }
 
 async function fetchText(url) {
+	const isRedditUrl = /^https?:\/\/(?:www\.|old\.)?reddit\.com\b/i.test(url);
 	const resp = await axios.get(url, {
 		responseType: 'text',
 		timeout: TIMEOUT,
 		maxContentLength: MAX_DOC_BYTES,
 		headers: {
-			'User-Agent': 'person-search-server/1.0 (research tool)',
+			'User-Agent':
+				isRedditUrl ? 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36' : 'person-search-server/1.0 (research tool)',
 			'Accept': 'text/html,application/xhtml+xml',
 		},
 	});

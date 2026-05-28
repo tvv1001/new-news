@@ -140,6 +140,7 @@ function buildFeedItemHydrationSignature(item: any = {}) {
 		discoveredAt: item?.discoveredAt || '',
 		previewImageSrc: item?.previewImage?.src || '',
 		previewImageAlt: item?.previewImage?.alt || '',
+		previewImages: Array.isArray(item?.previewImages) ? item.previewImages.map((image: any) => ({ src: image?.src || '', alt: image?.alt || '' })) : [],
 		originalLink: item?.originalLink || '',
 		commentsLink: item?.commentsLink || '',
 		tags: Array.isArray(item?.tags) ? item.tags : [],

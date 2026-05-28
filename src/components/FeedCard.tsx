@@ -81,6 +81,27 @@ function getPreviewMediaMode(item: any = {}) {
 	return { type: 'unknown', src: rawSrc };
 }
 
+function normalizeCardPreviewImages(item: any = {}) {
+	const seen = new Set();
+	const candidates = [...(Array.isArray(item?.previewImages) ? item.previewImages : []), item?.previewImage];
+
+	return candidates
+		.map((image) => {
+			const src = unescapeHtml(String(image?.src || '').trim());
+			if (!src || !isImageUrl(src)) return null;
+			return {
+				src,
+				alt: String(image?.alt || item?.title || 'Article image').trim(),
+			};
+		})
+		.filter((image): image is { src: string; alt: string } => Boolean(image?.src))
+		.filter((image) => {
+			if (seen.has(image.src)) return false;
+			seen.add(image.src);
+			return true;
+		});
+}
+
 function FeedCard({
 	item = {},
 	className = '',
@@ -92,15 +113,18 @@ function FeedCard({
 	allowDetailedContent = false,
 }: FeedCardProps) {
 	const [hidePreviewImage, setHidePreviewImage] = useState(false);
+	const [activePreviewIndex, setActivePreviewIndex] = useState(0);
 	const [isExpanded, setIsExpanded] = useState(false);
 	const [isPreviewExpanded, setIsPreviewExpanded] = useState(false);
 	const [needsExpansion, setNeedsExpansion] = useState(false);
 	const [shouldAutoExpand, setShouldAutoExpand] = useState(false);
 	const contentRef = useRef<HTMLDivElement>(null);
 
-	const previewImage = !hidePreviewImage && item?.previewImage?.src ? item.previewImage : null;
-	const previewMedia = useMemo(() => getPreviewMediaMode(item), [item]);
+	const previewImages = useMemo(() => normalizeCardPreviewImages(item), [item]);
+	const previewImage = !hidePreviewImage ? previewImages[activePreviewIndex] || item?.previewImage || null : null;
+	const previewMedia = useMemo(() => getPreviewMediaMode({ ...item, previewImage }), [item, previewImage]);
 	const isImagePreview = previewMedia.type === 'image';
+	const isImageCarousel = isImagePreview && previewImages.length > 1;
 	const previewMediaUrl = previewMedia.type === 'video' || previewMedia.type === 'reddit-embed' ? previewMedia.src : '';
 	const imageSrc = useMemo(() => (isImagePreview && previewImage?.src ? unescapeHtml(previewImage.src) : ''), [isImagePreview, previewImage?.src]);
 	const sourceHref = getFeedSourceHref(item);
@@ -114,6 +138,17 @@ function FeedCard({
 		: '';
 	const displaySummaryText = allowDetailedContent && isFullStoryInComments && detailedText ? detailedText : summaryText;
 	const summaryTokens = useMemo(() => extractLinkifiedFeedTokens(displaySummaryText, item), [displaySummaryText, item]);
+
+	useEffect(() => {
+		setActivePreviewIndex(0);
+		setHidePreviewImage(false);
+		setIsPreviewExpanded(false);
+	}, [item]);
+
+	useEffect(() => {
+		if (activePreviewIndex < previewImages.length) return;
+		setActivePreviewIndex(0);
+	}, [activePreviewIndex, previewImages.length]);
 
 	useEffect(() => {
 		const node = contentRef.current;
@@ -151,6 +186,13 @@ function FeedCard({
 
 	const isCardExpanded = isExpanded || shouldAutoExpand;
 	const canToggleFromSummary = needsExpansion;
+	const handlePreviewStep = (event: React.MouseEvent<HTMLButtonElement>, direction: number) => {
+		event.preventDefault();
+		event.stopPropagation();
+		if (!previewImages.length) return;
+		setActivePreviewIndex((current) => (current + direction + previewImages.length) % previewImages.length);
+		setHidePreviewImage(false);
+	};
 
 	const handleSummaryToggle = (event: React.MouseEvent<HTMLElement> | React.KeyboardEvent<HTMLElement>) => {
 		const target = event.target as HTMLElement | null;
@@ -211,6 +253,29 @@ function FeedCard({
 					<div className={`context-feed-preview ${isPreviewExpanded ? 'is-expanded' : 'is-collapsed'}`}>
 						{isImagePreview ?
 							<>
+								{isImageCarousel && (
+									<>
+										<div className='context-feed-preview-carousel-controls'>
+											<button
+												type='button'
+												className='context-feed-preview-carousel-button'
+												onClick={(event) => handlePreviewStep(event, -1)}
+												aria-label='Show previous image'>
+												‹
+											</button>
+											<button
+												type='button'
+												className='context-feed-preview-carousel-button'
+												onClick={(event) => handlePreviewStep(event, 1)}
+												aria-label='Show next image'>
+												›
+											</button>
+										</div>
+										<span className='context-feed-preview-carousel-counter'>
+											{activePreviewIndex + 1} / {previewImages.length}
+										</span>
+									</>
+								)}
 								<button
 									type='button'
 									className='context-feed-preview-toggle'
@@ -225,9 +290,21 @@ function FeedCard({
 										src={imageSrc}
 										alt={previewImage.alt || item.title || 'Article image'}
 										loading='lazy'
-										onError={() => setHidePreviewImage(true)}
+										onError={() => {
+											if (previewImages.length > 1 && activePreviewIndex < previewImages.length - 1) {
+												setActivePreviewIndex((current) => Math.min(current + 1, previewImages.length - 1));
+												return;
+											}
+											setHidePreviewImage(true);
+										}}
 									/>
-									<span className='context-feed-preview-toggle-label'>{isPreviewExpanded ? 'Collapse image' : 'Expand image'}</span>
+									<span className='context-feed-preview-toggle-label'>
+										{isPreviewExpanded ?
+											'Collapse image'
+										: isImageCarousel ?
+											'Open carousel'
+										:	'Expand image'}
+									</span>
 								</button>
 								{isPreviewExpanded && (
 									<button

@@ -1578,56 +1578,80 @@ function isXLikeContextMatch(match = {}) {
 function buildContextMatchPreviewFallbackUrls(match = {}) {
 	const urls = [];
 
-	for (const candidate of [match?.originalLink, match?.link]) {
+	for (const candidate of [match?.commentsLink, match?.originalLink, match?.link]) {
 		const value = String(candidate || '').trim();
 		if (!value || urls.includes(value)) continue;
 		if (!/^https?:\/\//i.test(value)) continue;
 		urls.push(value);
+
+		// For Reddit comments pages, also try old.reddit.com (lighter HTML, less rate-limited)
+		if (isRedditCommentsUrl(value)) {
+			try {
+				const oldUrl = value.replace(/^https?:\/\/(?:www\.)?reddit\.com\//i, 'https://old.reddit.com/');
+				if (oldUrl !== value && !urls.includes(oldUrl)) {
+					urls.push(oldUrl);
+				}
+			} catch {
+				// ignore
+			}
+		}
 	}
 
 	return urls;
 }
 
+function hasRedditGalleryFallbackCandidate(match = {}) {
+	return buildContextMatchPreviewFallbackUrls(match).some((url) => isRedditCommentsUrl(url));
+}
+
 function shouldAttemptContextMatchPreviewFallback(match = {}) {
-	if (normalizePreviewImage(match?.previewImage)) return false;
+	const previewImages = normalizePreviewImages(Array.isArray(match?.previewImages) && match.previewImages.length ? match.previewImages : [match?.previewImage]);
 	const candidateUrls = buildContextMatchPreviewFallbackUrls(match);
 	if (!candidateUrls.length) return false;
+	if (hasRedditGalleryFallbackCandidate(match) && previewImages.length < 2) return true;
+	if (normalizePreviewImage(match?.previewImage)) return false;
 
 	return candidateUrls.some((url) => isGoogleNewsHostname(url)) || isXLikeContextMatch(match);
 }
 
-export async function resolveContextMatchPreviewImage(match = {}, { loader = parseDocument } = {}) {
+export async function resolveContextMatchPreviewMedia(match = {}, { loader = parseDocument } = {}) {
 	if (!shouldAttemptContextMatchPreviewFallback(match)) return null;
 
 	for (const candidateUrl of buildContextMatchPreviewFallbackUrls(match)) {
 		const cached = previewImageFallbackCache.get(candidateUrl);
 		if (cached && Date.now() - cached.fetchedAt < CONTEXT_PREVIEW_IMAGE_CACHE_MS) {
-			if (cached.previewImage?.src && !isGenericPreviewImage(cached.previewImage)) {
-				return cached.previewImage;
+			const cachedPreviewImages = normalizePreviewImages(cached.previewImages || cached.previewImage);
+			if (cachedPreviewImages.length) {
+				return {
+					previewImage: cachedPreviewImages[0],
+					previewImages: cachedPreviewImages,
+				};
 			}
 			continue;
 		}
 
 		try {
 			const parsed = await loader(candidateUrl);
-			const previewImage =
-				normalizePreviewImage(parsed?.previewImage) ||
-				normalizePreviewImage(parsed?.imageContext?.renderableEntries?.[0]) ||
-				normalizePreviewImage(parsed?.imageContext?.entries?.[0]);
-			const normalizedPreviewImage = previewImage?.src && !isGenericPreviewImage(previewImage) ? previewImage : null;
+			const previewImages = extractPreviewImagesFromParsedDocument(parsed);
+			const previewImage = previewImages[0] || null;
 
 			previewImageFallbackCache.set(candidateUrl, {
 				fetchedAt: Date.now(),
-				previewImage: normalizedPreviewImage,
+				previewImage,
+				previewImages,
 			});
 
-			if (normalizedPreviewImage) {
-				return normalizedPreviewImage;
+			if (previewImages.length) {
+				return {
+					previewImage,
+					previewImages,
+				};
 			}
 		} catch (error) {
 			previewImageFallbackCache.set(candidateUrl, {
 				fetchedAt: Date.now(),
 				previewImage: null,
+				previewImages: [],
 			});
 			logger.debug('Context match preview image fallback failed', {
 				url: candidateUrl,
@@ -1639,6 +1663,11 @@ export async function resolveContextMatchPreviewImage(match = {}, { loader = par
 	return null;
 }
 
+export async function resolveContextMatchPreviewImage(match = {}, { loader = parseDocument } = {}) {
+	const resolvedPreviewMedia = await resolveContextMatchPreviewMedia(match, { loader });
+	return resolvedPreviewMedia?.previewImage || null;
+}
+
 async function enrichContextMatchesPreviewImages(items = []) {
 	const input = Array.isArray(items) ? items : [];
 	const enriched = [];
@@ -1648,8 +1677,18 @@ async function enrichContextMatchesPreviewImages(items = []) {
 		const resolvedBatch = await Promise.all(
 			batch.map(async (item) => {
 				if (!shouldAttemptContextMatchPreviewFallback(item)) return item;
-				const previewImage = await resolveContextMatchPreviewImage(item);
-				return previewImage ? { ...item, previewImage } : item;
+				const previewMedia = await resolveContextMatchPreviewMedia(item);
+				if (!previewMedia?.previewImages?.length) return item;
+
+				const mergedPreviewImages = normalizePreviewImages([...(Array.isArray(item?.previewImages) ? item.previewImages : []), item?.previewImage, ...previewMedia.previewImages]);
+
+				if (!mergedPreviewImages.length) return item;
+
+				return {
+					...item,
+					previewImage: mergedPreviewImages[0],
+					previewImages: mergedPreviewImages,
+				};
 			}),
 		);
 		enriched.push(...resolvedBatch);
@@ -1682,6 +1721,24 @@ function normalizePreviewImage(value = null) {
 	};
 }
 
+function normalizePreviewImages(values = []) {
+	const seen = new Set();
+	const normalizedImages = [];
+
+	for (const value of Array.isArray(values) ? values : [values]) {
+		const normalizedImage = normalizePreviewImage(value);
+		if (!normalizedImage?.src || isGenericPreviewImage(normalizedImage)) continue;
+
+		const imageKey = buildPreviewImageUniqKey(normalizedImage);
+		if (!imageKey || seen.has(imageKey)) continue;
+
+		seen.add(imageKey);
+		normalizedImages.push(normalizedImage);
+	}
+
+	return normalizedImages;
+}
+
 const GENERIC_PREVIEW_IMAGE_TEXT_RE =
 	/\b(?:logo|logomark|icon|favicon|avatar|profile image|brand|branding|header|navigation|nav|menu|footer|breadcrumb|pager|pagination|subscribe|donate|sponsored|advertisement|marketing|homepage|home page|ad|ads|sponsor|sponsored content)\b/i;
 const GENERIC_PREVIEW_IMAGE_SRC_RE =
@@ -1707,23 +1764,28 @@ function keepOnlyUniquePreviewImages(items = []) {
 	const seenPreviewImages = new Set();
 
 	return (Array.isArray(items) ? items : []).map((item) => {
-		const previewImage = normalizePreviewImage(item?.previewImage);
-		if (!previewImage?.src) return item;
-		if (isGenericPreviewImage(previewImage)) {
-			return { ...item, previewImage: null };
+		const previewImages = normalizePreviewImages(Array.isArray(item?.previewImages) && item.previewImages.length ? item.previewImages : [item?.previewImage]);
+		if (!previewImages.length) return { ...item, previewImage: null, previewImages: [] };
+
+		const uniquePreviewImages = previewImages.filter((previewImage) => {
+			const imageKey = buildPreviewImageUniqKey(previewImage);
+			if (!imageKey || seenPreviewImages.has(imageKey)) {
+				return false;
+			}
+
+			seenPreviewImages.add(imageKey);
+			return true;
+		});
+
+		if (!uniquePreviewImages.length) {
+			return { ...item, previewImage: null, previewImages: [] };
 		}
 
-		const imageKey = buildPreviewImageUniqKey(previewImage);
-		if (!imageKey) {
-			return { ...item, previewImage: null };
-		}
-
-		if (seenPreviewImages.has(imageKey)) {
-			return { ...item, previewImage: null };
-		}
-
-		seenPreviewImages.add(imageKey);
-		return { ...item, previewImage };
+		return {
+			...item,
+			previewImage: uniquePreviewImages[0],
+			previewImages: uniquePreviewImages,
+		};
 	});
 }
 
@@ -1777,6 +1839,41 @@ function normalizeFeedImageCandidate(candidate = null, baseUrl = '') {
 	});
 }
 
+function collectFeedImageCandidates(candidate = null, baseUrl = '', results = [], seenObjects = new WeakSet()) {
+	if (!candidate) return results;
+
+	if (typeof candidate === 'string') {
+		const normalized = normalizeFeedImageCandidate(candidate, baseUrl);
+		if (normalized?.src) results.push(normalized);
+		return results;
+	}
+
+	if (Array.isArray(candidate)) {
+		for (const entry of candidate) {
+			collectFeedImageCandidates(entry, baseUrl, results, seenObjects);
+		}
+		return results;
+	}
+
+	if (typeof candidate !== 'object') return results;
+	if (seenObjects.has(candidate)) return results;
+	seenObjects.add(candidate);
+
+	const normalized = normalizeFeedImageCandidate(candidate, baseUrl);
+	if (normalized?.src) {
+		results.push(normalized);
+	}
+
+	for (const value of Object.values(candidate)) {
+		if (!value || value === candidate) continue;
+		if (typeof value === 'object' || Array.isArray(value)) {
+			collectFeedImageCandidates(value, baseUrl, results, seenObjects);
+		}
+	}
+
+	return results;
+}
+
 function resolveFeedItemUrl(baseUrl = '', value = '') {
 	const rawValue = String(value || '').trim();
 	if (!rawValue) return '';
@@ -1803,9 +1900,42 @@ function extractPreviewImageFromHtmlFragment(value = '', baseUrl = '') {
 	});
 }
 
+function extractPreviewImagesFromHtmlFragment(value = '', baseUrl = '') {
+	const html = String(value || '').trim();
+	if (!html || !/<(?:img|figure|meta|div|span|p|a)\b/i.test(html)) return [];
+
+	const $ = cheerio.load(html);
+	const previewImages = [];
+
+	$('img').each((_, element) => {
+		const image = $(element);
+		const rawSrc = image.attr('src') || image.attr('data-src') || '';
+		const src = resolveFeedItemUrl(baseUrl, rawSrc) || String(rawSrc).trim();
+		if (!src) return;
+
+		previewImages.push({
+			src,
+			alt: image.attr('alt') || image.attr('aria-label') || '',
+			caption: image.attr('title') || image.attr('alt') || '',
+			originUrl: src,
+		});
+	});
+
+	return normalizePreviewImages(previewImages);
+}
+
+function extractPreviewImagesFromParsedDocument(document = {}) {
+	return normalizePreviewImages([...(Array.isArray(document?.imageContext?.renderableEntries) ? document.imageContext.renderableEntries : []), document?.previewImage]);
+}
+
 export function extractFeedItemPreviewImage(item = {}, feed = {}) {
+	return extractFeedItemPreviewImages(item, feed)[0] || null;
+}
+
+export function extractFeedItemPreviewImages(item = {}, feed = {}) {
 	const baseUrl = String(item.link || item.guid || feed.homepage || feed.url || '').trim();
 	const candidates = [
+		item.previewImages,
 		item.previewImage,
 		item.image,
 		item.enclosure,
@@ -1817,18 +1947,17 @@ export function extractFeedItemPreviewImage(item = {}, feed = {}) {
 		item['podcast:image'],
 		item?.custom?.image,
 	];
+	const previewImages = [];
 
 	for (const candidate of candidates) {
-		const normalized = normalizeFeedImageCandidate(candidate, baseUrl);
-		if (normalized?.src && !isGenericPreviewImage(normalized)) return normalized;
+		collectFeedImageCandidates(candidate, baseUrl, previewImages);
 	}
 
 	for (const htmlCandidate of [item.content, item['content:encoded'], item.contentSnippet, item.summary]) {
-		const normalized = extractPreviewImageFromHtmlFragment(htmlCandidate, baseUrl);
-		if (normalized?.src && !isGenericPreviewImage(normalized)) return normalized;
+		previewImages.push(...extractPreviewImagesFromHtmlFragment(htmlCandidate, baseUrl));
 	}
 
-	return null;
+	return normalizePreviewImages(previewImages);
 }
 
 function buildSearchEngineHomepageUrl(engine = '', keyword = '') {
@@ -3437,6 +3566,7 @@ async function loadContextFeeds() {
 }
 
 function hydrateMatch(feed = {}, item = {}, keywords = []) {
+	const previewImages = extractFeedItemPreviewImages(item, feed);
 	const combinedText = String(
 		item.__matchText || [item.title, item.contentSnippet, item.content, item.summary, ...(Array.isArray(item.categories) ? item.categories : [])].filter(Boolean).join(' '),
 	).trim();
@@ -3475,7 +3605,8 @@ function hydrateMatch(feed = {}, item = {}, keywords = []) {
 		link: item.link || item.guid || '',
 		originalLink: redditSummaryLinks.originalLink || '',
 		commentsLink: redditSummaryLinks.commentsLink || '',
-		previewImage: extractFeedItemPreviewImage(item, feed),
+		previewImage: previewImages[0] || null,
+		previewImages,
 		publishedAt: parsePublishedAt(item),
 		discoveredAt: new Date().toISOString(),
 		score,
@@ -3485,8 +3616,7 @@ function hydrateMatch(feed = {}, item = {}, keywords = []) {
 }
 
 async function buildMatches(feeds = [], keywords = []) {
-	const contexts = createEmptyContexts();
-	const matches = [];
+	const rawMatches = [];
 
 	for (const feed of feeds) {
 		if (!feed?.url || !feed?.context) continue;
@@ -3508,10 +3638,7 @@ async function buildMatches(feeds = [], keywords = []) {
 					const match = hydrateMatch(feed, candidate, keywords);
 					if (!match) continue;
 					if (isFuturePublishedAt(match.publishedAt)) continue;
-					matches.push(match);
-					if (Array.isArray(contexts[match.context])) {
-						contexts[match.context].push(match);
-					}
+					rawMatches.push(match);
 				}
 			}
 		} catch (error) {
@@ -3529,6 +3656,17 @@ async function buildMatches(feeds = [], keywords = []) {
 				url: feed.url,
 				error: error.message,
 			});
+		}
+	}
+
+	// Enrich Reddit gallery posts and Google News items with additional preview images
+	const matches = await enrichContextMatchesPreviewImages(rawMatches);
+
+	// Rebuild per-context arrays from the enriched matches
+	const contexts = createEmptyContexts();
+	for (const match of matches) {
+		if (Array.isArray(contexts[match.context])) {
+			contexts[match.context].push(match);
 		}
 	}
 
