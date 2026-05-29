@@ -150,48 +150,6 @@ export default function NewsDeckPage() {
 
 	return (
 		<div className='dark-route-shell news-deck-shell'>
-			<header className='news-deck-header'>
-				<div>
-					<h1>Live News Deck</h1>
-					<p className='news-deck-subtitle'>A live SSE-powered news deck for context feed snapshots and tagged feed monitoring.</p>
-				</div>
-
-				<div className='news-deck-header-actions'>
-					<button
-						className='btn btn-secondary'
-						type='button'
-						onClick={handleRefresh}
-						disabled={isRefreshing}>
-						{isRefreshing ? 'Refreshing…' : 'Refresh Now'}
-					</button>
-					<span className={`status-pill ${isConnected ? 'status-online' : 'status-offline'}`}>{isConnected ? 'SSE Connected' : 'SSE Offline'}</span>
-				</div>
-			</header>
-
-			<section className='news-deck-status'>
-				<div>
-					<strong>Status:</strong> {monitor ? formatRelativeTime(monitor.lastUpdatedAt) : 'Waiting for feed data…'}
-				</div>
-				<div>
-					<strong>Stream version:</strong> {monitor?.streamVersion ?? 'N/A'}
-				</div>
-				<div>
-					<strong>Tags:</strong>{' '}
-					{tagOptions.length ?
-						tagOptions.map((tag) => (
-							<button
-								key={tag}
-								type='button'
-								className={`tag-chip ${tag === activeTag ? 'is-active' : ''}`}
-								onClick={() => setSelectedTag(tag)}>
-								{tag}
-							</button>
-						))
-					:	<span className='news-deck-empty'>No active tags yet.</span>}
-				</div>
-				{error && <div className='news-deck-error'>Error: {error}</div>}
-			</section>
-
 			<section className='news-deck-columns'>
 				<ContextFeedColumn
 					columnKey='tagged'

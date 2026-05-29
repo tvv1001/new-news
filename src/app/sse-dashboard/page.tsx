@@ -17,7 +17,6 @@ export default function SSEDashboardPage() {
 	const [portal, setPortal] = useState<any>(null);
 	const [loading, setLoading] = useState(true);
 	const [editingSource, setEditingSource] = useState<any>(null);
-	const [editingRight, setEditingRight] = useState<any>(null);
 	const [testingPreview, setTestingPreview] = useState<any>(null);
 	const [form, setForm] = useState({
 		url: '',
@@ -27,7 +26,6 @@ export default function SSEDashboardPage() {
 		replaceTagValue: '',
 		testTag: '',
 	});
-	const [formRight, setFormRight] = useState({ url: '', source: '' });
 
 	const load = async (force = false) => {
 		try {
@@ -120,27 +118,6 @@ export default function SSEDashboardPage() {
 			await load(true);
 		} catch (error: any) {
 			alert(error.message || 'Failed to remove');
-		}
-	};
-
-	const handleEditRight = (source: any) => {
-		setEditingRight(source);
-		setFormRight({ url: source.url || '', source: source.source || '' });
-	};
-
-	const handleSubmitRight = async (event: any) => {
-		event?.preventDefault();
-		try {
-			if (editingRight) {
-				await updateContextSource(editingRight.url || editingRight, { ...editingRight, ...formRight });
-			} else {
-				await addContextSource({ ...formRight, context: 'news' });
-			}
-			setFormRight({ url: '', source: '' });
-			setEditingRight(null);
-			await load(true);
-		} catch (error: any) {
-			alert(error.message || 'Failed to save source');
 		}
 	};
 
@@ -370,156 +347,6 @@ export default function SSEDashboardPage() {
 					<section className='panel portal-card'>
 						<h3>Live Tag Stream Preview</h3>
 						<div>{liveMatches.length ? `${liveMatches.length} matching items currently buffered.` : 'No matching items buffered yet.'}</div>
-					</section>
-				</div>
-
-				<div
-					className='portal-column'
-					style={{ flex: 1 }}>
-					<section className='panel portal-card'>
-						<h3>Source Management</h3>
-						<div>Started: {portal?.status?.started ? 'yes' : 'no'}</div>
-						<div>Stream version: {portal?.status?.streamVersion}</div>
-						<div>Feeds: {portal?.status?.feedCount}</div>
-					</section>
-
-					<section className='panel portal-card portal-sources'>
-						<h3>User Sources</h3>
-						<form
-							onSubmit={handleSubmitRight}
-							className='form-grid'>
-							<div className='form-field full-width'>
-								<label>URL</label>
-								<input
-									type='url'
-									value={formRight.url}
-									onChange={(event) => setFormRight((state) => ({ ...state, url: event.target.value }))}
-									required
-								/>
-							</div>
-							<div className='form-field'>
-								<label>Source name</label>
-								<input
-									value={formRight.source}
-									onChange={(event) => setFormRight((state) => ({ ...state, source: event.target.value }))}
-								/>
-							</div>
-							<div className='form-actions'>
-								<button
-									className='btn btn-primary'
-									type='submit'>
-									{editingRight ? 'Update' : 'Add'}
-								</button>
-								{editingRight && (
-									<button
-										type='button'
-										className='btn btn-secondary'
-										onClick={() => {
-											setEditingRight(null);
-											setFormRight({ url: '', source: '' });
-										}}>
-										Cancel
-									</button>
-								)}
-							</div>
-						</form>
-
-						<div
-							className='portal-list portal-list-large'
-							style={{ marginTop: 12 }}>
-							{Array.isArray(portal?.sources?.builtin) &&
-								portal.sources.builtin.map((feed: any, index: number) => (
-									<div
-										key={`builtin-${index}`}
-										className='portal-list-item'>
-										<div className='portal-item-main'>
-											<div className='portal-item-title'>{feed.source}</div>
-											<div className='portal-item-url'>{feed.url || feed.homepage || ''}</div>
-										</div>
-										<div className='portal-item-actions'>
-											<button
-												className='btn btn-remove'
-												onClick={() => handleRemove(feed.url || feed.homepage, false)}>
-												Remove
-											</button>
-										</div>
-									</div>
-								))}
-
-							{Array.isArray(portal?.sources?.userAdded) &&
-								portal.sources.userAdded.map((feed: any, index: number) => (
-									<div
-										key={`user-${index}`}
-										className='portal-list-item'>
-										<div className='portal-item-main'>
-											<div className='portal-item-title'>{feed.source}</div>
-											<div className='portal-item-url'>{feed.url || feed.homepage || ''}</div>
-										</div>
-										<div className='portal-item-actions'>
-											<button
-												className='btn btn-secondary'
-												onClick={() => handleEditRight(feed)}>
-												Edit
-											</button>
-											<button
-												className='btn btn-remove'
-												onClick={() => handleRemove(feed.url, true)}>
-												Remove
-											</button>
-										</div>
-									</div>
-								))}
-
-							{Array.isArray(portal?.catalog) &&
-								portal.catalog.map((feed: any, index: number) => (
-									<div
-										key={`catalog-${index}`}
-										className='portal-list-item'>
-										<div className='portal-item-main'>
-											<div className='portal-item-title'>{feed.source}</div>
-											<div className='portal-item-url'>{feed.url || feed.parentUrl || ''}</div>
-										</div>
-										<div className='portal-item-actions'>
-											<button
-												className='btn btn-remove'
-												onClick={() => handleRemove(feed.url || feed.parentUrl, false)}>
-												Remove
-											</button>
-										</div>
-									</div>
-								))}
-						</div>
-
-						{Array.isArray(portal?.sources?.blocked) && portal.sources.blocked.length > 0 && (
-							<div style={{ marginTop: 12 }}>
-								<h4>Blocked Sources</h4>
-								<div className='portal-list'>
-									{portal.sources.blocked.map((url: string, index: number) => (
-										<div
-											key={`blocked-right-${index}`}
-											className='portal-list-item'>
-											<div className='portal-item-main'>
-												<div className='portal-item-url'>{url}</div>
-											</div>
-											<div className='portal-item-actions'>
-												<button
-													className='btn btn-secondary'
-													onClick={() => handleUnblock(url)}>
-													Unblock
-												</button>
-											</div>
-										</div>
-									))}
-								</div>
-							</div>
-						)}
-
-						<div style={{ marginTop: 12 }}>
-							<strong>Tag Feed RSS Output</strong>
-							<div>
-								<code className='portal-url-code'>http://localhost:3001/api/context/rss</code>
-							</div>
-						</div>
 					</section>
 				</div>
 			</div>

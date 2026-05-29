@@ -3393,7 +3393,7 @@ body {
 }
 
 .news-deck-shell {
-	padding: 24px;
+	padding: 0px;
 	width: 100%;
 	box-sizing: border-box;
 	min-height: 100vh;
