@@ -4,6 +4,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { addContextTags, fetchContextMonitor, openContextMonitorStream } from '../../api';
 import ContextFeedColumn from '../../components/ContextFeedColumn';
 import { normalizeContextTagForSync } from '../../components/contextFeedTagUtils';
+import useBodyClass from '../../hooks/useBodyClass';
 import '../../style.css';
 
 function formatRelativeTime(isoDate = '') {
@@ -40,6 +41,7 @@ function normalizeTagValue(tag = '') {
 }
 
 export default function NewsDeckPage() {
+	useBodyClass('news-deck-page');
 	const [monitor, setMonitor] = useState<any>(null);
 	const [selectedTag, setSelectedTag] = useState('');
 	const [isConnected, setIsConnected] = useState(false);
