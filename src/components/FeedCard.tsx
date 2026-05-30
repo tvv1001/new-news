@@ -2,7 +2,8 @@ import { memo, useMemo, useState, useRef, useEffect } from 'react';
 import { extractLinkifiedFeedTokens, getFeedSourceHref } from './feedCardUtils';
 
 // Compact card defaults: much shorter collapsed height to make cards denser
-const COLLAPSED_CARD_HEIGHT = 160;
+// Increased by 2x per request
+const COLLAPSED_CARD_HEIGHT = 320;
 const AUTO_EXPAND_LINE_COUNT = 2;
 
 type FeedCardProps = {

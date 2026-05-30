@@ -199,6 +199,31 @@ contextRouter.get('/stream', (req, res) => {
 			const newSnapshot = payload.snapshot || payload;
 			const diff = computeDiff(lastSnapshot, newSnapshot);
 			if (hasDiffChanges(diff)) {
+				// If ordering of matches changed (newer items should appear earlier),
+				// prefer sending a full snapshot so clients can replace and render
+				// items in correct global chronological order instead of appending
+				// diffs which may force out-of-order insertion on the client.
+				try {
+					const oldMatches = Array.isArray(lastSnapshot.output?.matches) ? lastSnapshot.output.matches : lastSnapshot.matches || [];
+					const newMatches = Array.isArray(newSnapshot.output?.matches) ? newSnapshot.output.matches : newSnapshot.matches || [];
+					const oldIds = oldMatches.map((m) => String(m?.id || m?.link || ''));
+					const newIds = newMatches.map((m) => String(m?.id || m?.link || ''));
+					const orderingChanged = JSON.stringify(oldIds) !== JSON.stringify(newIds);
+					if (orderingChanged) {
+						writeSseEvent(res, {
+							event: 'snapshot',
+							id: payload.id,
+							data: {
+								reason: payload.reason,
+								snapshot: newSnapshot,
+							},
+						});
+						lastSnapshot = newSnapshot;
+						return;
+					}
+				} catch (e) {
+					// fall through to sending diffs if ordering detection fails
+				}
 				writeSseEvent(res, {
 					event: 'diff',
 					id: payload.id,

@@ -904,7 +904,7 @@ body {
 .context-ticker-window {
 	position: relative;
 	overflow: auto;
-	height: 280px;
+	height: 560px; /* doubled */
 	min-height: 0;
 	scrollbar-width: thin;
 	scrollbar-color: rgba(37, 99, 235, 0.28) transparent;
@@ -924,7 +924,7 @@ body {
 }
 
 .general-news-item {
-	min-height: 96px;
+	min-height: 192px; /* doubled */
 }
 
 .context-feed-preview {
@@ -932,9 +932,9 @@ body {
 	display: block;
 	float: right;
 	width: 30%;
-	max-width: 180px;
-	min-width: 100px;
-	margin: 6px 0 8px 10px;
+	max-width: 360px; /* doubled */
+	min-width: 200px; /* doubled */
+	margin: 12px 0 16px 16px; /* slightly increased spacing */
 	overflow: hidden;
 	border-radius: 4px;
 	border: 1px solid rgba(219, 228, 240, 0.8);
@@ -945,7 +945,7 @@ body {
 .context-feed-preview img {
 	display: block;
 	width: 100%;
-	height: 96px;
+	height: 192px; /* doubled */
 	object-fit: cover;
 	background: rgba(226, 232, 240, 0.45);
 }
@@ -954,7 +954,7 @@ body {
 	position: relative;
 	width: 100%;
 	padding-top: 56.25%;
-	min-height: 96px;
+	min-height: 192px; /* doubled */
 	overflow: hidden;
 	background: rgba(226, 232, 240, 0.45);
 }
@@ -1158,6 +1158,7 @@ body {
 	border: none;
 	outline: none;
 	display: grid;
+	grid-template-columns: 1fr; /* enforce single column so items stack vertically by date */
 	gap: var(--gap);
 }
 
@@ -2724,7 +2725,7 @@ body {
 }
 
 .scan-card-body-collapsed {
-	max-height: 320px;
+	max-height: 640px; /* doubled */
 	overflow: hidden;
 }
 
@@ -2738,7 +2739,7 @@ body {
 	left: 0;
 	right: 0;
 	bottom: 0;
-	height: 96px;
+	height: 192px; /* doubled */
 	background: linear-gradient(180deg, rgba(255, 255, 255, 0), rgba(255, 255, 255, 0.92) 45%, rgba(255, 255, 255, 1));
 	pointer-events: none;
 }

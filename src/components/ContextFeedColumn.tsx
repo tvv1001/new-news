@@ -3,7 +3,8 @@ import { isFutureDatedFeedItem, sortFeedItemsNewestFirst } from './contextFeedCh
 import { getLiveFeedRecencyPriority, isSuppressedLiveFeedItem } from './liveFeedSourcePolicy';
 import FeedCard from './FeedCard';
 
-const TAGGED_LANE_LIMIT = 10;
+// Increase visible cards per lane by 3x as requested
+const TAGGED_LANE_LIMIT = 30;
 
 function normalizeTagKeyword(value = '') {
 	return String(value || '')
