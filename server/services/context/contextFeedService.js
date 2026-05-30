@@ -5,13 +5,31 @@ import { fileURLToPath } from 'node:url';
 import * as cheerio from 'cheerio';
 import Parser from 'rss-parser';
 import { parseDocument } from '../crawler/documentParser.js';
-import { bingSearch, googleSearch, yahooSearch } from '../crawler/searchEngines.js';
+
+// Provide safe fallbacks for search engine functions in case the
+// `searchEngines` module is removed. We attempt a dynamic import and
+// otherwise keep no-op implementations that return empty results so the
+// rest of the service can operate without runtime import errors.
+let bingSearch = async () => ({ source: 'bing', results: [] });
+let googleSearch = async () => ({ source: 'google', results: [] });
+let yahooSearch = async () => ({ source: 'yahoo', results: [] });
+try {
+	const se = await import('../crawler/searchEngines.js');
+	bingSearch = se.bingSearch || bingSearch;
+	googleSearch = se.googleSearch || googleSearch;
+	yahooSearch = se.yahooSearch || yahooSearch;
+} catch (err) {
+	// Keep fallbacks; logging may not be initialized yet so use console.debug.
+	console.debug('searchEngines module not available, using empty fallbacks');
+}
 import { ensureStockSymbolCatalog, isKnownUsStockSymbol, isStockSymbolCatalogReady, resetStockSymbolCatalogForTests } from './stockSymbolRegistry.js';
+import GetTopNews from '../api/getTopNews.js';
 import { logger } from '../../utils/logger.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const CONTEXT_FEEDS_FILE = path.resolve(__dirname, '../../data/context-feeds.json');
 const BLOCKED_FEEDS_FILE = path.resolve(__dirname, '../../data/blocked-feeds.json');
+const CONTEXT_KEYWORDS_FILE = process.env.CONTEXT_KEYWORDS_FILE ? path.resolve(process.env.CONTEXT_KEYWORDS_FILE) : path.resolve(__dirname, '../../data/context-keywords.json');
 const CONTEXTS = ['research', 'news', 'shopping'];
 const CONTEXT_FEED_REFRESH_MS = Math.max(60 * 1000, Number(process.env.CONTEXT_FEED_REFRESH_MS) || 3 * 60 * 1000);
 const X_FEED_REFRESH_MS = Math.max(30 * 1000, Number(process.env.X_FEED_REFRESH_MS) || 60 * 1000);
@@ -19,14 +37,13 @@ const CONTEXT_FEED_ITEMS_PER_SOURCE = Math.max(2, Math.min(10, Number(process.en
 const X_CONTEXT_FEED_ITEMS_PER_SOURCE = Math.max(8, Math.min(40, Number(process.env.X_CONTEXT_FEED_ITEMS_PER_SOURCE) || 18));
 const CONTEXT_FEED_MATCH_LIMIT = Math.max(12, Math.min(120, Number(process.env.CONTEXT_FEED_MATCH_LIMIT) || 96));
 const CONTEXT_SEARCH_ENGINE_REFRESH_MS = Math.max(CONTEXT_FEED_REFRESH_MS, Number(process.env.CONTEXT_SEARCH_ENGINE_REFRESH_MS) || 3 * 60 * 1000);
-const CONTEXT_SEARCH_ENGINE_KEYWORD_LIMIT = Math.max(1, Math.min(8, Number(process.env.CONTEXT_SEARCH_ENGINE_KEYWORD_LIMIT) || 6));
 const CONTEXT_SEARCH_ENGINE_RESULT_LIMIT = Math.max(2, Math.min(12, Number(process.env.CONTEXT_SEARCH_ENGINE_RESULT_LIMIT) || 8));
 const ACTUALLY_RELEVANT_API_BASE_URL = process.env.ACTUALLY_RELEVANT_API_BASE_URL || 'https://actually-relevant-api.onrender.com';
 const GOOGLE_NEWS_TAG_FEED_LIMIT = Math.max(1, Math.min(12, Number(process.env.GOOGLE_NEWS_TAG_FEED_LIMIT) || 8));
 const CONTEXT_PREVIEW_IMAGE_CACHE_MS = Math.max(CONTEXT_FEED_REFRESH_MS, Number(process.env.CONTEXT_PREVIEW_IMAGE_CACHE_MS) || 6 * 60 * 60 * 1000);
 const CONTEXT_PREVIEW_IMAGE_ENRICH_CONCURRENCY = Math.max(1, Math.min(6, Number(process.env.CONTEXT_PREVIEW_IMAGE_ENRICH_CONCURRENCY) || 3));
 const GOOGLE_ALERTS_FEEDS_JSON = process.env.GOOGLE_ALERTS_FEEDS_JSON || '';
-const REDDIT_TAG_FEED_LIMIT = Math.max(1, Math.min(12, Number(process.env.REDDIT_TAG_FEED_LIMIT) || 6));
+// Reddit tag feed limit removed — reddit feeds are managed from the dashboard now.
 const CONTEXT_SEARCH_ENGINE_SOURCE_LABELS = {
 	google: 'Google Search',
 	bing: 'Bing Search',
@@ -94,32 +111,8 @@ const FINANCE_REDDIT_SUBREDDITS = [
 	{ subreddit: 'investing', source: 'Reddit · r/investing' },
 	{ subreddit: 'options', source: 'Reddit · r/options' },
 ];
-const INVESTING_STOCK_NEWS_FEEDS = [
-	{
-		source: 'Investing.com · Stock Market News',
-		homepage: 'https://www.investing.com/news/stock-market-news',
-		url: 'https://www.investing.com/rss/news_25.rss',
-		tags: ['news', 'investing.com', 'stock-market-news'],
-	},
-	{
-		source: 'Investing.com · Company News',
-		homepage: 'https://www.investing.com/news/company-news',
-		url: 'https://www.investing.com/rss/news_356.rss',
-		tags: ['news', 'investing.com', 'company-news'],
-	},
-	{
-		source: 'Investing.com · Stock Analyst Ratings',
-		homepage: 'https://www.investing.com/news/analyst-ratings',
-		url: 'https://www.investing.com/rss/news_1061.rss',
-		tags: ['news', 'investing.com', 'analyst-ratings'],
-	},
-	{
-		source: 'Investing.com · Earnings Reports and Whispers',
-		homepage: 'https://www.investing.com/news/earnings',
-		url: 'https://www.investing.com/rss/news_1062.rss',
-		tags: ['news', 'investing.com', 'earnings'],
-	},
-];
+// Investing.com feeds removed — finance sources are dashboard-managed now.
+const INVESTING_STOCK_NEWS_FEEDS = [];
 const GENERAL_REDDIT_SUBREDDITS = [
 	{ subreddit: 'news', source: 'Reddit · r/news' },
 	{ subreddit: 'worldnews', source: 'Reddit · r/worldnews' },
@@ -208,20 +201,15 @@ const parser = new Parser({
 });
 const FUTURE_DATE_TOLERANCE_MS = 5 * 60 * 1000;
 
-const REDDIT_REQUEST_HEADERS = {
-	'User-Agent': 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36',
-	'Accept': 'application/rss+xml, application/atom+xml, application/xml, text/xml,*/*;q=0.9',
-	'Accept-Language': 'en-US,en;q=0.9',
-	'Referer': 'https://www.reddit.com/',
-	'Origin': 'https://www.reddit.com',
-};
+// Reddit-specific request headers removed — fetches will use default or
+// `HTML_REQUEST_HEADERS` where appropriate.
 const HTML_REQUEST_HEADERS = {
 	'User-Agent': 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36 QueryNotify/1.0',
 	'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,text/xml;q=0.8,*/*;q=0.7',
 	'Accept-Language': 'en-US,en;q=0.9',
 	'Cache-Control': 'no-cache',
 };
-const WEBSITE_FEED_PREVIEW_LIMIT = 3;
+
 const WEBSITE_FEED_ITEM_LIMIT = Math.max(CONTEXT_FEED_ITEMS_PER_SOURCE, 10);
 const WEBSITE_DISCOVERY_SCORE_THRESHOLD = 4;
 const WEBSITE_TITLE_MIN_LENGTH = 12;
@@ -733,14 +721,17 @@ export function buildDefaultContextSourceLabel(inputUrl = '', options = {}) {
 export function applyTagToUrlTemplate(template = '', tag = '') {
 	const normalizedTemplate = String(template || '').trim();
 	const normalizedTag = normalizeTemplateTagValue(tag);
-	if (!normalizedTemplate || !normalizedTag) return '';
+	if (!normalizedTemplate) return '';
 
 	const encodedTag = encodeURIComponent(normalizedTag);
 	if (TAG_TEMPLATE_PLACEHOLDER_RE.test(normalizedTemplate)) {
+		// Replace placeholder even when tag is empty so callers can build a URL
+		// with an empty query value (e.g. q=) when no tag is available.
 		return normalizedTemplate.replace(TAG_TEMPLATE_PLACEHOLDER_GLOBAL_RE, encodedTag);
 	}
 
-	return `${normalizedTemplate}${encodedTag}`;
+	// If there's no placeholder, append the tag when provided, otherwise return the base template
+	return encodedTag ? `${normalizedTemplate}${encodedTag}` : normalizedTemplate;
 }
 
 function resolveTagTemplateRequest(input = {}, fallbackTags = []) {
@@ -771,8 +762,18 @@ function resolveTagTemplateRequest(input = {}, fallbackTags = []) {
 		.map((value) => normalizeTemplateTagValue(value))
 		.find(Boolean);
 
+	// If no test tag or active fallback tag is available, do not block validation.
+	// Return a tag-template descriptor with an empty testTag/testedUrl so the
+	// dashboard can save the template and validation can occur later when a tag
+	// becomes available.
 	if (!fallbackTag) {
-		throw new Error('Provide a test tag or add at least one active tag before validating a base URL template');
+		return {
+			useTagTemplate: true,
+			baseUrl,
+			replaceTagValue,
+			testTag: '',
+			testedUrl: '',
+		};
 	}
 
 	const testedUrl = applyTagToUrlTemplate(baseUrl, fallbackTag);
@@ -1272,6 +1273,52 @@ async function resolveContextSource(inputUrl = '', options = {}) {
 
 async function resolveContextSourceInput(input = {}, options = {}) {
 	const templateRequest = resolveTagTemplateRequest(input, options.fallbackTags || []);
+
+	// Special-case: Reddit search URL templates are HTML-driven and not RSS.
+	// Dashboard is allowed to save reddit search tag-templates without performing
+	// live validation even when a test tag is supplied. Return a minimal
+	// tag-template resolved object to allow the UI to persist the template.
+	try {
+		if (templateRequest?.baseUrl) {
+			const parsedBase = new URL(templateRequest.baseUrl);
+			if (/reddit\.com$/i.test(parsedBase.hostname) && parsedBase.pathname.toLowerCase().startsWith('/search')) {
+				return {
+					type: 'tag-template',
+					parsed: { title: '', description: '', items: [] },
+					finalUrl: templateRequest.baseUrl,
+					homepage: templateRequest.baseUrl,
+					storageUrl: templateRequest.baseUrl,
+					validationMethod: 'tag-template',
+					useTagTemplate: true,
+					baseUrl: templateRequest.baseUrl,
+					replaceTagValue: templateRequest.replaceTagValue,
+					testTag: '',
+					testedUrl: '',
+				};
+			}
+		}
+	} catch (e) {
+		// ignore parse errors and continue with normal validation
+	}
+	// If this is a tag-template but we couldn't build a tested URL (no test tag provided
+	// and no active tags available), skip live validation and return a minimal tag-template
+	// resolved object so the dashboard can save the template without blocking.
+	if (templateRequest.useTagTemplate && !templateRequest.testedUrl) {
+		return {
+			type: 'tag-template',
+			parsed: { title: '', description: '', items: [] },
+			finalUrl: templateRequest.baseUrl,
+			homepage: templateRequest.baseUrl,
+			storageUrl: templateRequest.baseUrl,
+			validationMethod: 'tag-template',
+			useTagTemplate: true,
+			baseUrl: templateRequest.baseUrl,
+			replaceTagValue: templateRequest.replaceTagValue,
+			testTag: '',
+			testedUrl: '',
+		};
+	}
+
 	const resolvedSource = await resolveContextSource(templateRequest.testedUrl, options);
 
 	if (!templateRequest.useTagTemplate) {
@@ -1377,13 +1424,9 @@ function transformPlatformUrlToFeedUrl(inputUrl = '') {
 			throw error;
 		}
 
-		// Reddit
-		if (/(^|\.)reddit\.com$/i.test(hostname)) {
-			// Subreddit or User
-			if (pathname.startsWith('/r/') || pathname.startsWith('/u/') || pathname.startsWith('/user/')) {
-				return `${trimmed.replace(/\/+$/, '')}/.rss`;
-			}
-		}
+		// Reddit handling is managed from the dashboard now; do not auto-convert
+		// reddit.com platform URLs into RSS feeds here. If a feed URL is provided
+		// via the dashboard it will be used as-is.
 
 		// Google Search / News
 		if (/(^|\.)google\.[a-z.]+$/i.test(hostname)) {
@@ -1459,7 +1502,8 @@ function isRedditFeedUrl(value = '') {
 
 async function fetchAndParseFeed(feedUrl = '') {
 	const response = await fetch(feedUrl, {
-		headers: isRedditFeedUrl(feedUrl) ? REDDIT_REQUEST_HEADERS : undefined,
+		// No special Reddit headers — let fetch use defaults or HTML_REQUEST_HEADERS
+		headers: undefined,
 	});
 
 	if (!response.ok) {
@@ -1467,7 +1511,19 @@ async function fetchAndParseFeed(feedUrl = '') {
 	}
 
 	const xml = await response.text();
-	return parser.parseString(xml);
+	try {
+		return parser.parseString(xml);
+	} catch (err) {
+		// Include a small snippet of the XML in the error to help diagnosing
+		const snippet = String(xml || '')
+			.slice(0, 400)
+			.replace(/\s+/g, ' ');
+		const message = `${err?.message || String(err || '')} -- XML snippet: ${snippet}`;
+		const e = new Error(message);
+		// preserve the original stack for debugging
+		e.stack = err?.stack || e.stack;
+		throw e;
+	}
 }
 
 async function parseFeed(feedUrl = '') {
@@ -1476,6 +1532,14 @@ async function parseFeed(feedUrl = '') {
 	try {
 		return await parser.parseURL(feedUrl);
 	} catch (error) {
+		// Try to fetch raw XML and parse it ourselves to provide a more
+		// diagnostic error message (includes a snippet of the response).
+		try {
+			return await fetchAndParseFeed(feedUrl);
+		} catch (fallbackErr) {
+			// If fallback fails, prefer the more informative fallbackErr
+			throw fallbackErr;
+		}
 		// Detect if this is a local X scraper proxy failure — any error qualifies for fallback
 		const isLocalProxy = feedUrl.includes('/api/x/twitter/');
 		const isRetryableError =
@@ -1516,6 +1580,89 @@ async function fetchContextSourceItems(feed = {}, options = {}) {
 
 	if (feed.type === 'search-engine') {
 		return fetchSearchEngineFeedItems(feed);
+	}
+
+	// Special-case: Reddit search pages are HTML/JS-driven and do not expose
+	// a usable RSS feed in this deployment. Convert search URLs to the JSON
+	// endpoint and extract posts directly so dashboard-managed reddit search
+	// templates produce items in the monitor.
+	try {
+		if (
+			isRedditFeedUrl(String(feed?.url || '')) &&
+			String(feed?.url || '')
+				.toLowerCase()
+				.includes('/search')
+		) {
+			const urlObj = new URL(String(feed.url));
+			const q = urlObj.searchParams.get('q') || '';
+			const sort = urlObj.searchParams.get('sort') || 'new';
+			const rssUrl = new URL('https://old.reddit.com/search.rss');
+			if (q) rssUrl.searchParams.set('q', q);
+			if (sort) rssUrl.searchParams.set('sort', sort);
+			rssUrl.searchParams.set('type', 'link');
+			rssUrl.searchParams.set('limit', String(Math.min(40, Math.max(1, limit))));
+
+			try {
+				const parsed = await parseFeed(rssUrl.toString());
+				if (parsed?.items && parsed.items.length) {
+					return parsed.items.slice(0, limit);
+				}
+			} catch (rssErr) {
+				logger.debug('old.reddit.com RSS failed, falling back to JSON', { url: rssUrl.toString(), error: rssErr?.message });
+			}
+
+			// Try the JSON endpoint as a secondary fallback (may be blocked).
+			const jsonUrl = new URL('https://www.reddit.com/search.json');
+			if (q) jsonUrl.searchParams.set('q', q);
+			if (sort) jsonUrl.searchParams.set('sort', sort);
+			jsonUrl.searchParams.set('type', 'link');
+			jsonUrl.searchParams.set('limit', String(Math.min(40, Math.max(1, limit))));
+
+			const resp = await fetch(jsonUrl.toString(), { headers: { 'User-Agent': 'QueryNotify/1.0 (by /u/you)' } });
+			if (resp.ok) {
+				const data = await resp.json().catch(() => null);
+				const children = data?.data?.children || [];
+				return children
+					.map((c) => c?.data)
+					.filter(Boolean)
+					.map((d) => ({
+						title: String(d.title || '').trim(),
+						link: d.permalink ? `https://www.reddit.com${d.permalink}` : String(d.url || '').trim(),
+						guid: d.id ? `reddit:${d.id}` : String(d.url || '').trim(),
+						pubDate: d.created_utc ? new Date(d.created_utc * 1000).toUTCString() : new Date().toUTCString(),
+						isoDate: d.created_utc ? new Date(d.created_utc * 1000).toISOString() : undefined,
+						content: String(d.selftext || ''),
+						contentSnippet: String(d.selftext || d.title || '').slice(0, 280),
+						previewImage: d.preview?.images?.[0]?.source ? { src: d.preview.images[0].source.url.replace(/&amp;/g, '&') } : null,
+						commentsLink: d.permalink ? `https://www.reddit.com${d.permalink}` : '',
+					}))
+					.slice(0, limit);
+			}
+		}
+	} catch (err) {
+		logger.debug('Reddit fetch failed, falling back to generic parsing', { url: feed?.url, error: err?.message });
+	}
+
+	// Builtin Hacker News feed
+	if (String(feed?.url || '') === 'builtin:hn-top') {
+		try {
+			const hnItems = await new GetTopNews().getStories(limit);
+			logger.debug('Fetched Hacker News items', { count: Array.isArray(hnItems) ? hnItems.length : 0 });
+			return (Array.isArray(hnItems) ? hnItems : [])
+				.map((item) => ({
+					title: String(item.title || '').trim(),
+					link: item.url ? String(item.url).trim() : `https://news.ycombinator.com/item?id=${item.id}`,
+					guid: `hn-${item.id}`,
+					pubDate: item.time ? new Date(item.time * 1000).toUTCString() : new Date().toUTCString(),
+					isoDate: item.time ? new Date(item.time * 1000).toISOString() : undefined,
+					content: item.text || '',
+					contentSnippet: (String(item.text || '') || String(item.title || '')).slice(0, 280),
+				}))
+				.slice(0, limit);
+		} catch (err) {
+			logger.debug('Failed to fetch builtin Hacker News feed', { error: err?.message || String(err || '') });
+			return [];
+		}
 	}
 
 	if (feed.type === 'tag-template-instance') {
@@ -1721,6 +1868,141 @@ function normalizePreviewImage(value = null) {
 	};
 }
 
+const DIRECT_VIDEO_SRC_RE = /^https?:\/\/.*\.(?:mp4|mov|webm|ogg|ogv|m4v|m3u8)(?:[?#].*)?$/i;
+const YOUTUBE_HOST_RE = /(^|\.)youtube\.com$|^youtu\.be$/i;
+
+function isDirectVideoPreviewUrl(value = '') {
+	const normalizedValue = String(value || '').trim();
+	return DIRECT_VIDEO_SRC_RE.test(normalizedValue) || /^https?:\/\/v\.redd\.it\//i.test(normalizedValue);
+}
+
+function extractYouTubePreviewEmbedUrl(value = '') {
+	try {
+		const url = new URL(String(value || '').trim());
+		const hostname = url.hostname.toLowerCase().replace(/^www\./, '');
+		if (!YOUTUBE_HOST_RE.test(hostname)) return '';
+		if (hostname === 'youtu.be') {
+			const videoId = sanitizeYouTubeVideoId(url.pathname.split('/').filter(Boolean)[0] || '');
+			return videoId ? `https://www.youtube.com/embed/${videoId}` : '';
+		}
+		if (url.pathname === '/watch') {
+			const videoId = sanitizeYouTubeVideoId(url.searchParams.get('v') || '');
+			return videoId ? `https://www.youtube.com/embed/${videoId}` : '';
+		}
+		if (url.pathname.startsWith('/embed/')) {
+			const videoId = sanitizeYouTubeVideoId(url.pathname.split('/')[2] || '');
+			return videoId ? `https://www.youtube.com/embed/${videoId}` : '';
+		}
+		if (url.pathname.startsWith('/shorts/')) {
+			const videoId = sanitizeYouTubeVideoId(url.pathname.split('/')[2] || '');
+			return videoId ? `https://www.youtube.com/embed/${videoId}` : '';
+		}
+	} catch {
+		return '';
+	}
+
+	return '';
+}
+
+function normalizePreviewMedia(value = null, baseUrl = '') {
+	if (!value) return null;
+
+	const normalizedValue =
+		typeof value === 'string' ?
+			{
+				src: resolveFeedItemUrl(baseUrl, value) || String(value || '').trim(),
+				type: '',
+				alt: '',
+				caption: '',
+				originUrl: resolveFeedItemUrl(baseUrl, value) || String(value || '').trim(),
+			}
+		: typeof value === 'object' ?
+			{
+				src:
+					resolveFeedItemUrl(baseUrl, value.src || value.url || value.href || value.link || value.content || value.embedUrl || value.player || value.embed) ||
+					String(value.src || value.url || value.href || value.link || value.content || value.embedUrl || value.player || value.embed || '').trim(),
+				type: String(value.type || value.medium || value.provider || value.kind || value.$?.type || '')
+					.trim()
+					.toLowerCase(),
+				alt: value.alt || value.title || value.caption || '',
+				caption: value.caption || value.title || value.alt || '',
+				originUrl:
+					resolveFeedItemUrl(baseUrl, value.originUrl || value.src || value.url || value.href || value.link || value.content || value.embedUrl || value.player || value.embed) ||
+					String(value.originUrl || value.src || value.url || value.href || value.link || value.content || value.embedUrl || value.player || value.embed || '').trim(),
+			}
+		:	null;
+
+	if (!normalizedValue?.src) return null;
+
+	if (normalizedValue.type === 'reddit-embed' || isRedditCommentsUrl(normalizedValue.src)) {
+		return {
+			type: 'reddit-embed',
+			src: normalizedValue.src,
+			alt: summarizeText(normalizedValue.alt || normalizedValue.caption || 'Embedded Reddit post', 160),
+			caption: summarizeText(normalizedValue.caption || normalizedValue.alt || '', 220),
+			originUrl: normalizedValue.originUrl || normalizedValue.src,
+		};
+	}
+
+	const youtubeEmbedUrl = extractYouTubePreviewEmbedUrl(normalizedValue.src);
+	if (normalizedValue.type === 'youtube' || normalizedValue.type === 'youtube-embed' || youtubeEmbedUrl) {
+		return {
+			type: 'youtube-embed',
+			src: youtubeEmbedUrl || normalizedValue.src,
+			alt: summarizeText(normalizedValue.alt || normalizedValue.caption || 'Embedded video', 160),
+			caption: summarizeText(normalizedValue.caption || normalizedValue.alt || '', 220),
+			originUrl: normalizedValue.originUrl || normalizedValue.src,
+		};
+	}
+
+	if (normalizedValue.type.startsWith('video/') || normalizedValue.type === 'video' || isDirectVideoPreviewUrl(normalizedValue.src)) {
+		return {
+			type: 'video',
+			src: normalizedValue.src,
+			alt: summarizeText(normalizedValue.alt || normalizedValue.caption || 'Embedded video', 160),
+			caption: summarizeText(normalizedValue.caption || normalizedValue.alt || '', 220),
+			originUrl: normalizedValue.originUrl || normalizedValue.src,
+		};
+	}
+
+	return null;
+}
+
+function collectFeedMediaCandidates(candidate = null, baseUrl = '', results = [], seenObjects = new WeakSet()) {
+	if (!candidate) return results;
+
+	if (typeof candidate === 'string') {
+		const normalized = normalizePreviewMedia(candidate, baseUrl);
+		if (normalized?.src) results.push(normalized);
+		return results;
+	}
+
+	if (Array.isArray(candidate)) {
+		for (const entry of candidate) {
+			collectFeedMediaCandidates(entry, baseUrl, results, seenObjects);
+		}
+		return results;
+	}
+
+	if (typeof candidate !== 'object') return results;
+	if (seenObjects.has(candidate)) return results;
+	seenObjects.add(candidate);
+
+	const normalized = normalizePreviewMedia(candidate, baseUrl);
+	if (normalized?.src) {
+		results.push(normalized);
+	}
+
+	for (const value of Object.values(candidate)) {
+		if (!value || value === candidate) continue;
+		if (typeof value === 'object' || Array.isArray(value)) {
+			collectFeedMediaCandidates(value, baseUrl, results, seenObjects);
+		}
+	}
+
+	return results;
+}
+
 function normalizePreviewImages(values = []) {
 	const seen = new Set();
 	const normalizedImages = [];
@@ -1922,6 +2204,78 @@ function extractPreviewImagesFromHtmlFragment(value = '', baseUrl = '') {
 	});
 
 	return normalizePreviewImages(previewImages);
+}
+
+function extractPreviewMediaCandidatesFromHtmlFragment(value = '', baseUrl = '') {
+	const html = String(value || '').trim();
+	if (!html || !/<(?:video|source|iframe|meta|a)\b/i.test(html)) return [];
+
+	const $ = cheerio.load(html);
+	const previewMedia = [];
+
+	$('video[src], source[src], iframe[src], a[href], meta[property="og:video"], meta[name="twitter:player"], meta[property="og:video:url"]').each((_, element) => {
+		const node = $(element);
+		const src = node.attr('src') || node.attr('href') || node.attr('content') || node.attr('data-src') || '';
+		const type = node.attr('type') || node.attr('data-type') || '';
+		const normalized = normalizePreviewMedia(
+			{
+				src,
+				type,
+				alt: node.attr('title') || node.attr('aria-label') || '',
+				caption: node.text() || '',
+			},
+			baseUrl,
+		);
+		if (normalized?.src) {
+			previewMedia.push(normalized);
+		}
+	});
+
+	return previewMedia;
+}
+
+function extractFeedItemPreviewMedia(item = {}, feed = {}, redditSummaryLinks = {}) {
+	const baseUrl = String(item.link || item.guid || feed.homepage || feed.url || '').trim();
+	const candidates = [
+		item.previewMedia,
+		item.previewVideo,
+		item.video,
+		item.enclosure,
+		item.enclosures,
+		item['media:content'],
+		item['media:group'],
+		item['media:thumbnail'],
+		item?.custom?.video,
+		item?.custom?.media,
+	];
+	const previewMedia = [];
+
+	for (const candidate of candidates) {
+		collectFeedMediaCandidates(candidate, baseUrl, previewMedia);
+	}
+
+	for (const htmlCandidate of [item.content, item['content:encoded'], item.contentSnippet, item.summary]) {
+		previewMedia.push(...extractPreviewMediaCandidatesFromHtmlFragment(htmlCandidate, baseUrl));
+	}
+
+	const firstPreviewMedia = previewMedia.find((entry) => entry?.src) || null;
+	if (firstPreviewMedia) {
+		return firstPreviewMedia;
+	}
+
+	if (redditSummaryLinks.commentsLink && !redditSummaryLinks.originalLink) {
+		return normalizePreviewMedia(
+			{
+				src: redditSummaryLinks.commentsLink,
+				type: 'reddit-embed',
+				alt: item.title || 'Embedded Reddit post',
+				caption: item.title || '',
+			},
+			baseUrl,
+		);
+	}
+
+	return null;
 }
 
 function extractPreviewImagesFromParsedDocument(document = {}) {
@@ -2480,97 +2834,38 @@ export function buildGoogleNewsTopicFeedUrl(topicId = '') {
 	return url.toString();
 }
 
-export function buildRedditFeedUrl(keyword = '') {
-	const query = buildRedditSearchQuery(keyword);
-	if (!query) return '';
-
-	const url = new URL('https://www.reddit.com/search.rss');
-	url.searchParams.set('q', query);
-	url.searchParams.set('sort', 'new');
-	return url.toString();
+export function buildRedditFeedUrl(/* keyword = '' */) {
+	// Reddit feed builders removed — dashboard will provide any reddit URLs.
+	return '';
 }
 
-export function buildRedditSubredditFeedUrl(subreddit = '', keyword = '') {
-	const normalizedSubreddit = String(subreddit || '')
-		.trim()
-		.replace(/^r\//i, '')
-		.replace(/^\//, '');
-	const query = buildRedditSearchQuery(keyword);
-	if (!normalizedSubreddit || !query) return '';
-
-	const url = new URL(`https://www.reddit.com/r/${normalizedSubreddit}/search.rss`);
-	url.searchParams.set('q', query);
-	url.searchParams.set('sort', 'new');
-	url.searchParams.set('restrict_sr', '1');
-	return url.toString();
+export function buildRedditSubredditFeedUrl(/* subreddit = '', keyword = '' */) {
+	return '';
 }
 
-export function buildRedditWallStreetBetsFeedUrl(keyword = '') {
-	return buildRedditSubredditFeedUrl('wallstreetbets', keyword);
+export function buildRedditWallStreetBetsFeedUrl(/* keyword = '' */) {
+	return '';
 }
 
-function buildRedditSubredditFeed(keyword = '', context = 'news', subredditConfig = {}) {
-	const normalizedKeyword = normalizeKeyword(keyword);
-	const normalizedContext = normalizeKeyword(context) || 'news';
-	const subreddit = String(subredditConfig.subreddit || '').trim();
-	const source = String(subredditConfig.source || '').trim() || `Reddit · r/${subreddit}`;
-	const feedUrl = buildRedditSubredditFeedUrl(subreddit, normalizedKeyword);
-	if (!normalizedKeyword || !feedUrl || !subreddit) return null;
-
-	const homepage = new URL(`https://www.reddit.com/r/${subreddit}/search`);
-	homepage.searchParams.set('q', buildRedditSearchQuery(normalizedKeyword));
-	homepage.searchParams.set('sort', 'new');
-	homepage.searchParams.set('restrict_sr', '1');
-
-	return {
-		context: normalizedContext,
-		source,
-		homepage: homepage.toString(),
-		url: feedUrl,
-		tags: [normalizedContext, 'reddit', subreddit, normalizedKeyword],
-		keyword: normalizedKeyword,
-	};
+function buildRedditSubredditFeed(/* keyword = '', context = 'news', subredditConfig = {} */) {
+	return null;
 }
 
-function buildFinanceRedditFeeds(keyword = '', context = 'news') {
-	return FINANCE_REDDIT_SUBREDDITS.map((subredditConfig) => buildRedditSubredditFeed(keyword, context, subredditConfig)).filter(Boolean);
+function buildFinanceRedditFeeds(/* keyword = '', context = 'news' */) {
+	return [];
 }
 
-function buildTopicalRedditFeeds(keyword = '', context = 'news') {
-	return GENERAL_REDDIT_SUBREDDITS.map((subredditConfig) => buildRedditSubredditFeed(keyword, context, subredditConfig)).filter(Boolean);
+function buildTopicalRedditFeeds(/* keyword = '', context = 'news' */) {
+	return [];
 }
 
-export function buildInvestingStockNewsFeeds(context = 'news') {
-	const normalizedContext = normalizeFeedContext(context);
-
-	return INVESTING_STOCK_NEWS_FEEDS.map((feed) => ({
-		context: normalizedContext,
-		source: feed.source,
-		homepage: feed.homepage,
-		url: feed.url,
-		tags: [normalizedContext, ...feed.tags.filter(Boolean)],
-	}));
+export function buildInvestingStockNewsFeeds(/* context = 'news' */) {
+	// Investing feeds disabled — return empty list for dashboard-only management.
+	return [];
 }
 
-function buildStandardRedditFeed(keyword = '', context = 'news') {
-	const query = buildRedditSearchQuery(keyword);
-	const normalizedKeyword = normalizeKeyword(keyword);
-	const normalizedContext = normalizeKeyword(context) || 'news';
-	const feedUrl = buildRedditFeedUrl(normalizedKeyword);
-	if (!query || !normalizedKeyword || !feedUrl) return null;
-
-	const homepage = new URL('https://www.reddit.com/search');
-	homepage.searchParams.set('q', query);
-	homepage.searchParams.set('sort', 'new');
-
-	return {
-		context: normalizedContext,
-		source: 'Reddit',
-		homepage: homepage.toString(),
-		url: feedUrl,
-		tags: [normalizedContext, 'reddit', normalizedKeyword],
-		keyword: normalizedKeyword,
-	};
+function buildStandardRedditFeed(/* keyword = '', context = 'news' */) {
+	return null;
 }
 
 function buildGoogleNewsFeed(keyword = '') {
@@ -2659,11 +2954,26 @@ function buildActuallyRelevantAllStoriesFeed() {
 }
 
 function buildBuiltinContextFeeds() {
+	// Built-in feeds exposed in the portal. Users can add tags to these sources
+	// via the dashboard. Hacker News is provided as a builtin source so you can
+	// assign tags (or leave untagged to show in the 'all' view).
 	return [
-		...GOOGLE_NEWS_TOPIC_FEEDS.map((topic) => buildGoogleNewsTopicFeed(topic)).filter(Boolean),
-		buildActuallyRelevantAllStoriesFeed(),
-		...ACTUALLY_RELEVANT_ISSUES.map((issue) => buildActuallyRelevantIssueFeed(issue)).filter(Boolean),
-	].filter(Boolean);
+		{
+			context: 'news',
+			source: 'Hacker News',
+			homepage: 'https://news.ycombinator.com',
+			url: 'builtin:hn-top',
+			tags: ['news', 'hackernews'],
+		},
+		{
+			context: 'news',
+			source: 'Reddit Search (template)',
+			homepage: 'https://www.reddit.com',
+			// Tag template: {TAG} will be substituted at runtime by the dashboard/monitor
+			url: 'https://www.reddit.com/search/?q={TAG}&type=posts&sort=new',
+			tags: ['news', 'reddit', 'template'],
+		},
+	];
 }
 
 function normalizeConfiguredFeedEntry(entry = null) {
@@ -2731,6 +3041,11 @@ function dedupeContextFeeds(feeds = []) {
 
 function buildContextFeedCatalog(feeds = [], keywords = []) {
 	const normalizedKeywords = [...new Set((keywords || []).map((keyword) => normalizeKeyword(keyword)).filter(Boolean))];
+	// If no active keywords are present, provide a default "all-news" set so
+	// tag-template feeds such as the Reddit search template produce reasonable
+	// instances in the catalog (breaking, global, local, national, finance).
+	const defaultKeywordsWhenEmpty = ['all-news', 'breaking', 'breaking-news', 'global', 'local', 'national', 'finance', 'current-events', 'world'];
+	const expandedKeywords = normalizedKeywords.length ? normalizedKeywords : defaultKeywordsWhenEmpty;
 	const templateFeeds = (Array.isArray(feeds) ? feeds : []).filter((feed) => isTagTemplateSource(feed));
 	const staticFeeds = (Array.isArray(feeds) ? feeds : []).filter((feed) => !isTagTemplateSource(feed));
 	const feedSearchKeywords = normalizedKeywords.flatMap((keyword) => buildFeedSearchKeywords(keyword));
@@ -2740,22 +3055,14 @@ function buildContextFeedCatalog(feeds = [], keywords = []) {
 	}));
 	const hasFinanceKeyword = keywordMatchers.some(({ matcher }) => matcher?.canUseFinanceFeeds);
 
-	const googleNewsFeeds = keywordMatchers
-		.slice(0, GOOGLE_NEWS_TAG_FEED_LIMIT)
-		.map(({ keyword }) => buildGoogleNewsFeed(keyword))
-		.filter(Boolean);
-	const redditFeeds = keywordMatchers
-		.slice(0, REDDIT_TAG_FEED_LIMIT)
-		.flatMap(({ keyword, matcher }) => {
-			if (matcher?.canUseFinanceFeeds) {
-				return buildFinanceRedditFeeds(keyword, 'news');
-			}
-
-			return [buildStandardRedditFeed(keyword, 'news'), ...buildTopicalRedditFeeds(keyword, 'news')].filter(Boolean);
-		})
-		.filter(Boolean);
-	const investingFeeds = hasFinanceKeyword ? buildInvestingStockNewsFeeds('news') : [];
-	const templateExpandedFeeds = templateFeeds.flatMap((feed) => expandTagTemplateFeed(feed, normalizedKeywords));
+	// External Google News feeds disabled — dashboard will manage news sources.
+	const googleNewsFeeds = [];
+	// Reddit feeds are managed via the dashboard; do not auto-generate reddit
+	// feeds here.
+	const redditFeeds = [];
+	// Investing.com / finance feeds disabled — dashboard will manage finance sources.
+	const investingFeeds = [];
+	const templateExpandedFeeds = templateFeeds.flatMap((feed) => expandTagTemplateFeed(feed, expandedKeywords));
 
 	const catalog = sortContextFeedCatalog([...googleNewsFeeds, ...redditFeeds, ...investingFeeds, ...staticFeeds, ...templateExpandedFeeds]);
 
@@ -2769,7 +3076,7 @@ function getContextFeedFamily(feed = {}) {
 	const tags = Array.isArray(feed?.tags) ? feed.tags.map((tag) => normalizeKeyword(tag)) : [];
 
 	if (feed?.type === 'search-engine') return 'search-engine';
-	if (source.includes('reddit') || feedUrl.includes('reddit.com') || homepage.includes('reddit.com') || tags.includes('reddit')) return 'reddit';
+	// Treat reddit links as generic RSS sources — dashboard will manage reddit URLs.
 	if (
 		source.includes('google news · twitter') ||
 		source.includes('twitter cashtags') ||
@@ -2785,8 +3092,7 @@ function getContextFeedFamily(feed = {}) {
 
 function getContextFeedPriority(feed = {}) {
 	switch (getContextFeedFamily(feed)) {
-		case 'reddit':
-			return 0;
+		// reddit removed — treat as RSS by default
 		case 'x':
 			return 1;
 		case 'quora':
@@ -2980,6 +3286,14 @@ function scoreKeywordMatch(text = '', keywords = [], options = {}) {
 	const normalizedText = normalizeKeyword(text);
 	if (!normalizedText) {
 		return { score: 0, matchedKeywords: [] };
+	}
+
+	// If any matcher explicitly requests an "always match" behavior, treat
+	// items as matching even when no user keywords are configured. This lets
+	// the monitor show builtin feeds (e.g. Hacker News) when the dashboard has
+	// no active tags/keywords.
+	if (Array.isArray(keywords) && keywords.some((k) => k && k.isAlways)) {
+		return { score: 1, matchedKeywords: [] };
 	}
 
 	if (!keywords.length) {
@@ -3205,9 +3519,14 @@ function stripRedditCommentText(value = '', commentText = '') {
 		.trim();
 }
 
+function isLikelyRedditSelfPost(redditSummaryLinks = {}) {
+	return Boolean(redditSummaryLinks?.commentsLink) && !redditSummaryLinks?.originalLink;
+}
+
 export function buildContextMatchCandidates(feed = {}, item = {}) {
 	const redditSummaryLinks = extractRedditSummaryLinks(item, feed);
-	const commentText = extractRedditCommentText(item, feed, redditSummaryLinks);
+	const shouldPreservePrimaryRedditBody = isLikelyRedditSelfPost(redditSummaryLinks);
+	const commentText = shouldPreservePrimaryRedditBody ? '' : extractRedditCommentText(item, feed, redditSummaryLinks);
 	const primaryTextParts = [
 		normalizeFeedText(item.title || ''),
 		stripRedditCommentText(item.contentSnippet || '', commentText),
@@ -3469,7 +3788,7 @@ export function selectMatchesWithKeywordCoverage(items = [], keywords = [], limi
 
 	const selected = [];
 	const selectedIds = new Set();
-	const preferredSocialFamilies = ['reddit', 'x'];
+	const preferredSocialFamilies = ['x'];
 	for (const family of preferredSocialFamilies) {
 		const nextMatch = sortedItems.find((item) => {
 			const itemId = item?.id || item?.link || item?.title;
@@ -3484,7 +3803,7 @@ export function selectMatchesWithKeywordCoverage(items = [], keywords = [], limi
 	}
 	if (financeKeywordSet.size) {
 		const financeSourcePreferenceQuota = getFinanceSourcePreferenceQuota(normalizedLimit);
-		for (const family of ['x', 'reddit']) {
+		for (const family of ['x']) {
 			const nextMatch = sortedItems.find((item) => {
 				const itemId = item?.id || item?.link || item?.title;
 				return itemId && !selectedIds.has(itemId) && matchesKeywordSet(item, financeKeywordSet) && getPreferredFinanceSourceFamily(item) === family;
@@ -3562,15 +3881,17 @@ async function loadContextFeeds() {
 		});
 	}
 
-	return dedupeContextFeeds([...buildBuiltinContextFeeds(), ...parseConfiguredAlertFeeds(), ...parsedFeeds]);
+	// Only use feeds that are explicitly configured in CONTEXT_FEEDS_FILE (dashboard-managed)
+	return dedupeContextFeeds(parsedFeeds);
 }
 
-function hydrateMatch(feed = {}, item = {}, keywords = []) {
+export function hydrateMatch(feed = {}, item = {}, keywords = []) {
 	const previewImages = extractFeedItemPreviewImages(item, feed);
 	const combinedText = String(
 		item.__matchText || [item.title, item.contentSnippet, item.content, item.summary, ...(Array.isArray(item.categories) ? item.categories : [])].filter(Boolean).join(' '),
 	).trim();
 	const redditSummaryLinks = item.__redditSummaryLinks || extractRedditSummaryLinks(item, feed);
+	const previewMedia = extractFeedItemPreviewMedia(item, feed, redditSummaryLinks);
 	const isTemplateDrivenFeed = feed?.type === 'tag-template-instance';
 	const templateTag = normalizeKeyword(feed?.templateTag || feed?.sampleTag || feed?.replaceTagValue || '');
 	let { score, matchedKeywords } = scoreKeywordMatch(combinedText, keywords, {
@@ -3607,6 +3928,7 @@ function hydrateMatch(feed = {}, item = {}, keywords = []) {
 		commentsLink: redditSummaryLinks.commentsLink || '',
 		previewImage: previewImages[0] || null,
 		previewImages,
+		previewMedia,
 		publishedAt: parsePublishedAt(item),
 		discoveredAt: new Date().toISOString(),
 		score,
@@ -3635,7 +3957,11 @@ async function buildMatches(feeds = [], keywords = []) {
 
 			for (const item of items) {
 				for (const candidate of buildContextMatchCandidates(feed, item)) {
-					const match = hydrateMatch(feed, candidate, keywords);
+					// For builtin Hacker News feed, force matches through regardless
+					// of the configured keyword set so Hacker News appears in the
+					// monitor output immediately.
+					const matchKeywords = String(feed?.url || '') === 'builtin:hn-top' ? [{ isAlways: true }] : keywords;
+					const match = hydrateMatch(feed, candidate, matchKeywords);
 					if (!match) continue;
 					if (isFuturePublishedAt(match.publishedAt)) continue;
 					rawMatches.push(match);
@@ -3769,8 +4095,31 @@ export async function refreshContextFeedMonitor({ force = false } = {}) {
 
 		const feeds = await loadContextFeeds();
 		const keywords = state.keywords.map((keyword) => buildKeywordMatcher(keyword)).filter(Boolean);
-		const feedCatalog = buildContextFeedCatalog(feeds, state.keywords);
+		// Include builtin feeds (like builtin:hn-top) so the monitor fetches them
+		// and they can produce matches even when not persisted by the user.
+		const feedCatalog = buildContextFeedCatalog([...(Array.isArray(feeds) ? feeds : []), ...buildBuiltinContextFeeds()], state.keywords);
 		state.feedCount = feedCatalog.length;
+
+		// Prune feedHealth entries for URLs that are no longer in the catalog
+		// (also allow builtin sources such as "builtin:hn-top"). This keeps the
+		// portal output clean after a user removes a persisted feed.
+		try {
+			const allowed = new Set([...(feedCatalog || []).map((f) => String(f.url || '')), ...(buildBuiltinContextFeeds() || []).map((f) => String(f.url || ''))]);
+			for (const key of Object.keys(state.feedHealth || {})) {
+				if (!allowed.has(String(key))) {
+					delete state.feedHealth[key];
+				}
+			}
+			// Also remove any historical notifications that reference removed hosts
+			state.notifications = (state.notifications || []).filter((n) => {
+				const src = String(n?.source || '').toLowerCase();
+				const link = String(n?.link || '').toLowerCase();
+				if (src.includes('news.google.com') || link.includes('news.google.com/rss/search?q=')) return false;
+				return true;
+			});
+		} catch (err) {
+			// non-fatal
+		}
 		updateProgressiveFeedState({
 			active: true,
 			phase: 'initializing',
@@ -3779,8 +4128,17 @@ export async function refreshContextFeedMonitor({ force = false } = {}) {
 		});
 
 		if (!keywords.length) {
-			state.contexts = createEmptyContexts();
-			state.matches = [];
+			// No user keywords configured — show builtin feeds (if any) by running
+			// the match builder with a sentinel matcher that forces matches through.
+			const forceAllKeywords = [{ isAlways: true }];
+			try {
+				const result = await buildMatches(feedCatalog, forceAllKeywords);
+				state.contexts = result?.contexts || createEmptyContexts();
+				state.matches = result?.matches || [];
+			} catch (err) {
+				state.contexts = createEmptyContexts();
+				state.matches = [];
+			}
 			state.lastUpdatedAt = new Date().toISOString();
 			state.lastError = '';
 			updateProgressiveFeedState({
@@ -3855,6 +4213,42 @@ export function removeContextKeywords(input = []) {
 	return state.keywords;
 }
 
+export async function loadPersistedContextKeywords() {
+	try {
+		const raw = await readFile(CONTEXT_KEYWORDS_FILE, 'utf-8');
+		const parsed = JSON.parse(raw);
+		if (!Array.isArray(parsed)) {
+			state.keywords = [];
+			return state.keywords;
+		}
+
+		state.keywords = [...new Set(parsed.map((keyword) => normalizeKeyword(keyword)).filter(Boolean))].slice(0, 20);
+		return state.keywords;
+	} catch (error) {
+		if (error?.code !== 'ENOENT') {
+			logger.error('Context keyword load failed', {
+				error: error.message,
+				file: CONTEXT_KEYWORDS_FILE,
+			});
+		}
+		state.keywords = [];
+		return state.keywords;
+	}
+}
+
+export async function savePersistedContextKeywords() {
+	try {
+		await writeFile(CONTEXT_KEYWORDS_FILE, JSON.stringify(state.keywords, null, 2));
+		return state.keywords;
+	} catch (error) {
+		logger.error('Context keyword save failed', {
+			error: error.message,
+			file: CONTEXT_KEYWORDS_FILE,
+		});
+		throw error;
+	}
+}
+
 export function getContextFeedSnapshot() {
 	return {
 		started: state.started,
@@ -3878,7 +4272,9 @@ export function getContextFeedSnapshot() {
 
 export async function getContextFeedPortalData() {
 	const feeds = await loadContextFeeds();
-	const catalog = buildContextFeedCatalog(feeds, state.keywords);
+	// Include builtin feeds in the catalog so template-based builtins (e.g. Reddit)
+	// are expanded and visible in the portal catalog.
+	const catalog = buildContextFeedCatalog([...(Array.isArray(feeds) ? feeds : []), ...buildBuiltinContextFeeds()], state.keywords);
 
 	// Also load just the user-added ones to identify them in the UI
 	let userAdded = [];
@@ -3967,9 +4363,10 @@ export function resetContextFeedMonitorForTests() {
 export function startContextFeedMonitor() {
 	if (state.started) return;
 	state.started = true;
-	emitContextFeedSnapshot('started');
 	void (async () => {
+		await loadPersistedContextKeywords();
 		await loadBlockedFeeds();
+		emitContextFeedSnapshot('started');
 		await refreshContextFeedMonitor().catch(() => {});
 	})();
 	state.timer = setInterval(() => {

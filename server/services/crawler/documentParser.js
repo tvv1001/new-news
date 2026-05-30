@@ -1161,6 +1161,37 @@ function isExcludedImageContextNode(node, image) {
 	return false;
 }
 
+function extractLinkedImageEntries($, baseUrl = '', entries = [], seen = new Set()) {
+	$('a[href]').each((_, element) => {
+		const link = $(element);
+		const src = resolveUrl(baseUrl, link.attr('href') || '');
+		if (!isLikelyRenderableImageSource(src)) return;
+		if (isExcludedImageContextNode(link, link)) return;
+
+		const alt = normalizeExtractedHtmlText(link.attr('aria-label') || link.attr('title') || link.text() || '');
+		const title = normalizeExtractedHtmlText(link.attr('title') || '');
+		const caption = normalizeExtractedHtmlText(
+			link.attr('data-caption') ||
+				link.closest('figure').find('figcaption').first().text() ||
+				link.parent().find('figcaption').first().text() ||
+				'',
+		);
+		const candidateEntry = {
+			src,
+			alt,
+			title,
+			caption,
+			originUrl: src,
+		};
+		if (isNonContentImageEntry(candidateEntry)) return;
+
+		const key = JSON.stringify(candidateEntry);
+		if (seen.has(key)) return;
+		seen.add(key);
+		entries.push(candidateEntry);
+	});
+}
+
 function isLikelyRenderableImageSource(value = '') {
 	const normalized = String(value || '').trim();
 	if (!normalized) return false;
@@ -1458,6 +1489,8 @@ export function extractImageContextMetadata(html = '', baseUrl = '') {
 
 		entries.push(candidateEntry);
 	});
+
+	extractLinkedImageEntries($, baseUrl, entries, seen);
 
 	const text = entries
 		.map((entry) => buildImageContextLabel(entry))

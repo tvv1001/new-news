@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import { extractFeedItemPreviewImages, resolveContextMatchPreviewMedia } from './services/context/contextFeedService.js';
+import { buildContextMatchCandidates, extractFeedItemPreviewImages, hydrateMatch, resolveContextMatchPreviewMedia } from './services/context/contextFeedService.js';
 
 test('extractFeedItemPreviewImages keeps multiple inline images from feed HTML fragments', () => {
 	const images = extractFeedItemPreviewImages(
@@ -98,4 +98,53 @@ test('resolveContextMatchPreviewMedia uses commentsLink fallback for reddit gall
 	assert.ok(previewMedia);
 	assert.equal(previewMedia.previewImages.length, 2);
 	assert.equal(attemptedUrls[0], commentsLink);
+});
+
+test('hydrateMatch carries inline video media into feed cards', () => {
+	const candidate = hydrateMatch(
+		{ context: 'news', source: 'Reddit · r/V2KTRUTH', type: 'tag-template-instance', templateTag: 'v2k' },
+		{
+			title: 'V2K implants',
+			link: 'https://www.reddit.com/r/V2KTRUTH/comments/1trhggt/v2k_implants/',
+			guid: 'https://www.reddit.com/r/V2KTRUTH/comments/1trhggt/v2k_implants/',
+			content: '<div><video controls src="https://v.redd.it/example/DASH_720.mp4"></video></div>',
+		},
+		[],
+	);
+
+	assert.equal(candidate.previewMedia?.type, 'video');
+	assert.equal(candidate.previewMedia?.src, 'https://v.redd.it/example/DASH_720.mp4');
+});
+
+test('hydrateMatch falls back to reddit embeds for self posts without external links', () => {
+	const candidate = hydrateMatch(
+		{ context: 'news', source: 'Reddit · r/V2KTRUTH', type: 'tag-template-instance', templateTag: 'v2k' },
+		{
+			title: 'V2K implants',
+			link: 'https://www.reddit.com/r/V2KTRUTH/comments/1trhggt/v2k_implants/',
+			guid: 'https://www.reddit.com/r/V2KTRUTH/comments/1trhggt/v2k_implants/',
+			content: '<p>self post</p>',
+		},
+		[],
+	);
+
+	assert.equal(candidate.previewMedia?.type, 'reddit-embed');
+	assert.equal(candidate.previewMedia?.src, 'https://www.reddit.com/r/V2KTRUTH/comments/1trhggt/v2k_implants/');
+});
+
+test('buildContextMatchCandidates preserves reddit self-post body on the primary card', () => {
+	const candidates = buildContextMatchCandidates(
+		{ context: 'news', source: 'Reddit · r/PandemicChan' },
+		{
+			title: 'Ebola-chan! (2014)',
+			link: 'https://www.reddit.com/r/PandemicChan/comments/1trn5ic/ebolachan_2014/',
+			guid: 'https://www.reddit.com/r/PandemicChan/comments/1trn5ic/ebolachan_2014/',
+			content:
+				'<div><p>A subreddit dedicated to Hanta-chan, Ebola-chan, and Vaccine-chan.</p><p>Archival art post.</p></div>',
+		},
+	);
+
+	assert.equal(candidates.length, 1);
+	assert.match(candidates[0].__matchText, /archival art post/i);
+	assert.match(String(candidates[0].content || ''), /archival art post/i);
 });

@@ -1,3 +1,5 @@
+import { applyContextMonitorDiff, mergeContextMonitorSnapshot } from '../utils/contextMonitorSnapshot';
+
 const DEFAULT_RETRY_MS = 15000;
 
 let contextBase = 'http://localhost:3001';
@@ -70,8 +72,7 @@ function connectStream() {
 	stream.addEventListener('snapshot', (event: any) => {
 		try {
 			const payload = JSON.parse(event.data);
-			// full snapshot fallback
-			latestSnapshot = mergeSnapshots(latestSnapshot, payload?.snapshot || payload);
+			latestSnapshot = mergeContextMonitorSnapshot(latestSnapshot, payload?.snapshot || payload);
 			postWorkerMessage('status', { status: 'connected' });
 			postWorkerMessage('snapshot', { reason: payload?.reason || 'snapshot', snapshot: latestSnapshot });
 		} catch (error: any) {
@@ -84,8 +85,7 @@ function connectStream() {
 		try {
 			const payload = JSON.parse(event.data);
 			const diff = payload?.diff || {};
-			// apply diffs to latestSnapshot
-			latestSnapshot = applyDiffToSnapshot(latestSnapshot, diff);
+			latestSnapshot = applyContextMonitorDiff(latestSnapshot, diff);
 			// emit per-card reactive events for consumers that want to react to individual items
 			for (const a of diff.added || []) {
 				postWorkerMessage('card-added', { item: a, family: 'combined', reason: payload?.reason || 'diff' });
@@ -103,27 +103,6 @@ function connectStream() {
 		}
 	});
 
-	function applyDiffToSnapshot(base = null, diff = { added: [], updated: [], removed: [] }) {
-		if (!base) base = { output: { matches: [] } };
-		const matches = Array.isArray(base.output?.matches) ? [...base.output.matches] : [];
-		const map = new Map();
-		for (const m of matches) if (m && m.id) map.set(String(m.id), m);
-		for (const u of diff.updated || []) {
-			if (u && u.id) map.set(String(u.id), u);
-		}
-		for (const a of diff.added || []) {
-			if (a && a.id) map.set(String(a.id), a);
-		}
-		for (const r of diff.removed || []) {
-			map.delete(String(r));
-		}
-		const merged = Array.from(map.values());
-		const out = JSON.parse(JSON.stringify(base));
-		out.output = out.output || {};
-		out.output.matches = merged;
-		return out;
-	}
-
 	stream.onopen = () => {
 		hasConnectedToStream = true;
 		postWorkerMessage('status', { status: 'connected' });
@@ -136,29 +115,6 @@ function connectStream() {
 		});
 		scheduleReconnect();
 	};
-}
-
-function mergeSnapshots(base = null, incoming = null) {
-	if (!incoming) return base || incoming;
-	if (!base) return incoming;
-	try {
-		const baseMatches = Array.isArray(base.output?.matches) ? base.output.matches : base.matches || [];
-		const incomingMatches = Array.isArray(incoming.output?.matches) ? incoming.output.matches : incoming.matches || [];
-		const map = new Map();
-		for (const m of baseMatches) {
-			if (m && m.id) map.set(String(m.id), m);
-		}
-		for (const m of incomingMatches) {
-			if (m && m.id) map.set(String(m.id), m);
-		}
-		const merged = Array.from(map.values());
-		const out = JSON.parse(JSON.stringify(base));
-		out.output = out.output || {};
-		out.output.matches = merged;
-		return out;
-	} catch {
-		return incoming || base;
-	}
 }
 
 async function bootstrapContextMonitor() {

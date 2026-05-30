@@ -22,6 +22,7 @@ export default function SSEDashboardPage() {
 			if (force) await fetchContextMonitor({ refresh: true });
 			const nextPortal = await fetchContextPortal();
 			setPortal(nextPortal || {});
+			// No UI test tag; we read active tag from portal when needed
 		} catch (error) {
 			console.error(error);
 		} finally {
@@ -48,6 +49,9 @@ export default function SSEDashboardPage() {
 	const builtinCatalogFeeds = catalog.filter((feed: any) => !userSourceUrls.has(String(feed?.url || feed?.parentUrl || '').trim()));
 	const liveMatches = Array.isArray(portal?.output?.matches) ? portal.output.matches : [];
 
+	const activeTag = portal?.tags && portal.tags.length ? portal.tags[0] : '';
+	const builtinTemplateFeeds = builtinCatalogFeeds.filter((feed: any) => String(feed?.url || '').includes('{TAG}') || feed.type === 'tag-template');
+
 	const resetForm = () =>
 		setForm({
 			url: '',
@@ -59,8 +63,10 @@ export default function SSEDashboardPage() {
 		if (!form.url) return;
 		setTestingPreview(null);
 		try {
+			const activeTag = portal?.tags && portal.tags.length ? portal.tags[0] : '';
 			const preview = await testContextSource({
 				url: form.url,
+				testTag: activeTag,
 			});
 			setTestingPreview(preview);
 		} catch (error: any) {
@@ -71,10 +77,11 @@ export default function SSEDashboardPage() {
 	const handleSubmit = async (event: any) => {
 		event?.preventDefault();
 		try {
+			const activeTag = portal?.tags && portal.tags.length ? portal.tags[0] : '';
 			if (editingSource) {
-				await updateContextSource(editingSource.url || editingSource, { ...editingSource, ...form });
+				await updateContextSource(editingSource.url || editingSource, { ...editingSource, ...form, testTag: activeTag });
 			} else {
-				await addContextSource({ ...form });
+				await addContextSource({ ...form, testTag: activeTag });
 			}
 			resetForm();
 			setEditingSource(null);
@@ -125,13 +132,6 @@ export default function SSEDashboardPage() {
 							</a>
 						</div>
 					</div>
-					<section className='panel portal-card'>
-						<h3>Status & Config (Tag Stream)</h3>
-						<div>Started: {portal?.status?.started ? 'yes' : 'no'}</div>
-						<div>Stream version: {portal?.status?.streamVersion}</div>
-						<div>Feeds: {portal?.status?.feedCount}</div>
-						<div>Live matches: {liveMatches.length}</div>
-					</section>
 
 					<section className='panel portal-card'>
 						<h3>Add / Edit Feed Source</h3>
@@ -151,6 +151,7 @@ export default function SSEDashboardPage() {
 									Use <code>{'{TAG}'}</code> in the URL and actual feed tags will be substituted at runtime.
 								</small>
 							</div>
+							{/* Test Tag is auto-supplied from the active portal tag; hidden from the UI */}
 							<div className='form-field'>
 								<label>Source name</label>
 								<input
@@ -217,7 +218,6 @@ export default function SSEDashboardPage() {
 						<h3>Catalog</h3>
 						{(() => {
 							const templateBaseUrls = portalUserAdded.filter((feed: any) => feed.type === 'tag-template');
-							const tagDrivenFeeds = builtinCatalogFeeds.filter((feed: any) => String(feed?.urlTemplate || feed?.parentUrl || '').trim());
 							const standardCatalogFeeds = builtinCatalogFeeds.filter((feed: any) => !String(feed?.urlTemplate || feed?.parentUrl || '').trim());
 
 							return (
@@ -229,22 +229,66 @@ export default function SSEDashboardPage() {
 													key={`template-${index}`}
 													className='portal-list-item'>
 													<div className='portal-item-main'>
-														<div className='portal-item-url'>{`Base URL: ${feed.url}`}</div>
+														<div className='portal-item-url'>
+															{(() => {
+																const activeTag = portal?.tags && portal.tags.length ? portal.tags[0] : 'all-news';
+																const displayUrl = String(feed.url || '');
+																const substituted = displayUrl.includes('{TAG}') ? displayUrl.replace(/\{TAG\}/g, encodeURIComponent(activeTag)) : displayUrl;
+																return (
+																	<a
+																		href={substituted}
+																		target='_blank'
+																		rel='noopener noreferrer'>
+																		{substituted}
+																	</a>
+																);
+															})()}
+														</div>
 													</div>
 												</div>
 											))}
 										</div>
 									)}
 
-									{tagDrivenFeeds.length > 0 && (
+									{builtinTemplateFeeds.length > 0 && (
 										<div className='portal-list portal-list-large'>
-											{tagDrivenFeeds.map((feed: any, index: number) => (
+											{builtinTemplateFeeds.map((feed: any, index: number) => (
 												<div
-													key={`tag-driven-${index}`}
+													key={`builtin-template-${index}`}
 													className='portal-list-item'>
 													<div className='portal-item-main'>
-														<div className='portal-item-title'>{feed.source}</div>
-														<div className='portal-item-url'>{feed.url || feed.parentUrl}</div>
+														<div className='portal-item-title'>{feed.source || '(Template)'}</div>
+														<div className='portal-item-url'>
+															{(() => {
+																const tag = activeTag || 'ebola';
+																const display =
+																	String(feed.url || '').includes('{TAG}') ? String(feed.url || '').replace(/\{TAG\}/gi, encodeURIComponent(tag)) : String(feed.url || '');
+																return (
+																	<a
+																		href={display}
+																		target='_blank'
+																		rel='noopener noreferrer'>
+																		{display}
+																	</a>
+																);
+															})()}
+														</div>
+													</div>
+													<div className='portal-item-actions'>
+														<button
+															className='btn btn-primary'
+															onClick={async () => {
+																try {
+																	const tag = activeTag || 'ebola';
+																	const newUrl = String(feed.url || '').replace(/\{TAG\}/gi, encodeURIComponent(tag));
+																	await addContextSource({ url: newUrl, source: `${feed.source || 'Template'} · ${tag}`, context: 'news', testTag: tag });
+																	await load(true);
+																} catch (err: any) {
+																	alert(err?.message || 'Failed to add template for tag');
+																}
+															}}>
+															Add for current tag
+														</button>
 													</div>
 												</div>
 											))}

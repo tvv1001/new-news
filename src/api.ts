@@ -1,3 +1,5 @@
+import { applyContextMonitorDiff, mergeContextMonitorSnapshot } from './utils/contextMonitorSnapshot';
+
 /**
  * api.js – thin client for the person-search server
  */
@@ -77,61 +79,10 @@ export function openContextMonitorStream({ onSnapshot, onOpen, onError }: any = 
 	const stream = new EventSource(buildApiUrl('/api/context/stream', CONTEXT_BASE));
 	let latestSnapshot: any = null;
 
-	function mergeSnapshots(base = null, incoming = null) {
-		if (!incoming) return base || incoming;
-		if (!base) return incoming;
-		try {
-			const baseMatches = Array.isArray(base.output?.matches) ? base.output.matches : base.matches || [];
-			const incomingMatches = Array.isArray(incoming.output?.matches) ? incoming.output.matches : incoming.matches || [];
-			const map = new Map();
-			for (const item of baseMatches) {
-				if (item?.id) map.set(String(item.id), item);
-			}
-			for (const item of incomingMatches) {
-				if (item?.id) map.set(String(item.id), item);
-			}
-			const merged = JSON.parse(JSON.stringify(base));
-			const mergedMatches = Array.from(map.values());
-			if (Array.isArray(merged.matches)) {
-				merged.matches = mergedMatches;
-			}
-			merged.output = merged.output || {};
-			merged.output.matches = mergedMatches;
-			return { ...merged, ...incoming };
-		} catch {
-			return incoming || base;
-		}
-	}
-
-	function applyDiffToSnapshot(base = null, diff = { added: [], updated: [], removed: [] }) {
-		if (!base) {
-			base = { output: { matches: [] } };
-		}
-		const matches = Array.isArray(base.output?.matches) ? [...base.output.matches] : base.matches || [];
-		const map = new Map(matches.filter((item: any) => item?.id).map((item: any) => [String(item.id), item]));
-		for (const item of diff.updated || []) {
-			if (item?.id) map.set(String(item.id), item);
-		}
-		for (const item of diff.added || []) {
-			if (item?.id) map.set(String(item.id), item);
-		}
-		for (const id of diff.removed || []) {
-			map.delete(String(id));
-		}
-		const nextSnapshot = JSON.parse(JSON.stringify(base));
-		const mergedMatches = Array.from(map.values());
-		if (Array.isArray(nextSnapshot.matches)) {
-			nextSnapshot.matches = mergedMatches;
-		}
-		nextSnapshot.output = nextSnapshot.output || {};
-		nextSnapshot.output.matches = mergedMatches;
-		return nextSnapshot;
-	}
-
 	const handleSnapshot = (event: any) => {
 		try {
 			const payload = JSON.parse(event.data);
-			latestSnapshot = mergeSnapshots(latestSnapshot, payload?.snapshot || payload);
+			latestSnapshot = mergeContextMonitorSnapshot(latestSnapshot, payload?.snapshot || payload);
 			onSnapshot?.({
 				...payload,
 				snapshot: latestSnapshot,
@@ -144,7 +95,7 @@ export function openContextMonitorStream({ onSnapshot, onOpen, onError }: any = 
 	const handleDiff = (event: any) => {
 		try {
 			const payload = JSON.parse(event.data);
-			latestSnapshot = applyDiffToSnapshot(latestSnapshot, payload?.diff || {});
+			latestSnapshot = applyContextMonitorDiff(latestSnapshot, payload?.diff || {});
 			onSnapshot?.({
 				...payload,
 				snapshot: latestSnapshot,

@@ -10,10 +10,12 @@ import {
 	removeContextFeedSource,
 	removeContextKeywords,
 	replaceContextKeywords,
+	savePersistedContextKeywords,
 	subscribeToContextFeedMonitor,
 	updateContextFeedSource,
 } from '../services/context/contextFeedService.js';
 import { logger } from '../utils/logger.js';
+import getTopNews from '../services/api/getTopNews.js';
 
 export const contextRouter = express.Router();
 
@@ -238,6 +240,7 @@ contextRouter.post('/keywords', async (req, res, next) => {
 	try {
 		const values = Array.isArray(req.body?.keywords) ? req.body.keywords : [req.body?.keyword].filter(Boolean);
 		const keywords = registerContextKeywords(values);
+		await savePersistedContextKeywords();
 		refreshContextFeedMonitorInBackground('keyword update');
 		const snapshot = getContextFeedSnapshot();
 		res.json({ keywords, snapshot });
@@ -250,6 +253,7 @@ contextRouter.post('/tags', async (req, res, next) => {
 	try {
 		const values = Array.isArray(req.body?.tags) ? req.body.tags : [req.body?.tag].filter(Boolean);
 		const tags = registerContextKeywords(values);
+		await savePersistedContextKeywords();
 		refreshContextFeedMonitorInBackground('tag update');
 		const snapshot = getContextFeedSnapshot();
 		res.json({ tags, snapshot });
@@ -262,6 +266,7 @@ contextRouter.put('/tags', async (req, res, next) => {
 	try {
 		const values = Array.isArray(req.body?.tags) ? req.body.tags : [];
 		const tags = replaceContextKeywords(values);
+		await savePersistedContextKeywords();
 		refreshContextFeedMonitorInBackground('tag replacement');
 		const snapshot = getContextFeedSnapshot();
 		res.json({ tags, snapshot });
@@ -274,6 +279,7 @@ contextRouter.delete('/tags', async (req, res, next) => {
 	try {
 		const values = Array.isArray(req.body?.tags) ? req.body.tags : [req.body?.tag].filter(Boolean);
 		const tags = values.length ? removeContextKeywords(values) : replaceContextKeywords([]);
+		await savePersistedContextKeywords();
 		refreshContextFeedMonitorInBackground('tag removal');
 		const snapshot = getContextFeedSnapshot();
 		res.json({ tags, snapshot });
@@ -335,6 +341,20 @@ contextRouter.post('/sources/block', async (req, res, next) => {
 		next(error);
 	}
 });
+
+// Debug: expose raw Hacker News items fetched by the server (class-based fetcher)
+contextRouter.get('/debug/hn', async (_req, res, next) => {
+	try {
+		const limit = Number.parseInt(String(_req.query.limit || '30'), 10) || 30;
+		const items = await new getTopNews().getStories(limit);
+		res.json({ count: Array.isArray(items) ? items.length : 0, items });
+	} catch (err) {
+		next(err);
+	}
+});
+
+// Debug: call the monitor's fetch path for builtin:hn-top
+// (hn-fetch debug route removed: internal helper not exported)
 
 contextRouter.delete('/sources/block', async (req, res, next) => {
 	try {

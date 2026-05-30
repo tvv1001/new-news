@@ -1,5 +1,5 @@
 import express from 'express';
-import { fetchFeedsSummaries } from '../services/rssIntegrator.js';
+import { fetchFeedsSummaries } from '../services/api/rssIntegrator.js';
 
 export const rssRouter = express.Router();
 

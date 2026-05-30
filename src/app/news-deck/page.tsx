@@ -1,11 +1,13 @@
 'use client';
 
 import { useEffect, useMemo, useState } from 'react';
-import { addContextTags, fetchContextMonitor, openContextMonitorStream } from '../../api';
+import { addContextTags, fetchContextMonitor, openContextMonitorStream, removeContextTags } from '../../api';
 import ContextFeedColumn from '../../components/ContextFeedColumn';
 import { normalizeContextTagForSync } from '../../components/contextFeedTagUtils';
 import useBodyClass from '../../hooks/useBodyClass';
 import '../../style.css';
+
+const ACTIVE_CONTEXT_TAG_STORAGE_KEY = 'query-notify.active-context-tag';
 
 function formatRelativeTime(isoDate = '') {
 	if (!isoDate) {
@@ -61,6 +63,31 @@ export default function NewsDeckPage() {
 	const tagOptions = useMemo(() => {
 		return Array.isArray(monitor?.tags) ? monitor.tags.map(normalizeTagValue).filter(Boolean) : [];
 	}, [monitor?.tags]);
+
+	useEffect(() => {
+		if (typeof window === 'undefined') return;
+		const storedTag = normalizeTagValue(window.localStorage.getItem(ACTIVE_CONTEXT_TAG_STORAGE_KEY) || '');
+		if (storedTag) {
+			setSelectedTag(storedTag);
+		}
+	}, []);
+
+	useEffect(() => {
+		if (typeof window === 'undefined') return;
+		if (!selectedTag) {
+			window.localStorage.removeItem(ACTIVE_CONTEXT_TAG_STORAGE_KEY);
+			return;
+		}
+
+		window.localStorage.setItem(ACTIVE_CONTEXT_TAG_STORAGE_KEY, normalizeTagValue(selectedTag));
+	}, [selectedTag]);
+
+	useEffect(() => {
+		if (!selectedTag) return;
+		if (!tagOptions.length) return;
+		if (tagOptions.includes(normalizeTagValue(selectedTag))) return;
+		setSelectedTag(tagOptions[0] || '');
+	}, [selectedTag, tagOptions]);
 
 	const loadMonitor = async ({ refresh = false, isMounted = true } = {}) => {
 		setError('');
@@ -139,8 +166,25 @@ export default function NewsDeckPage() {
 		}
 	};
 
-	const handleClearTag = () => {
-		setSelectedTag('');
+	const handleClearTag = async () => {
+		const tagToRemove = normalizeTagValue(activeTag);
+		if (!tagToRemove) {
+			setSelectedTag('');
+			return;
+		}
+
+		setIsRefreshing(true);
+		setError('');
+		try {
+			await removeContextTags([tagToRemove]);
+			const remainingTags = tagOptions.filter((tag) => tag !== tagToRemove);
+			setSelectedTag(remainingTags[0] || '');
+			await loadMonitor({ refresh: false });
+		} catch (err: any) {
+			setError(err?.message || 'Unable to remove tag right now.');
+		} finally {
+			setIsRefreshing(false);
+		}
 	};
 
 	const handleRefresh = async () => {
@@ -166,6 +210,8 @@ export default function NewsDeckPage() {
 					showComposer={true}
 					draftTagValue={selectedTag}
 					onDraftTagChange={setSelectedTag}
+					// show all news when no tag is present so the deck isn't empty
+					showAllWhenNoTag={true}
 				/>
 			</section>
 		</div>

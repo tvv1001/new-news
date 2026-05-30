@@ -1,8 +1,9 @@
 import { memo, useMemo, useState, useRef, useEffect } from 'react';
 import { extractLinkifiedFeedTokens, getFeedSourceHref } from './feedCardUtils';
 
-const COLLAPSED_CARD_HEIGHT = 500;
-const AUTO_EXPAND_LINE_COUNT = 3;
+// Compact card defaults: much shorter collapsed height to make cards denser
+const COLLAPSED_CARD_HEIGHT = 160;
+const AUTO_EXPAND_LINE_COUNT = 2;
 
 type FeedCardProps = {
 	item?: any;
@@ -28,6 +29,7 @@ const IMAGE_SRC_RE = /^data:image\/|^https?:\/\/.*\.(?:avif|apng|bmp|gif|jpe?g|j
 const VIDEO_SRC_RE = /^https?:\/\/.*\.(?:mp4|mov|webm|ogg|mpg|mpeg|m4v)(?:[?#].*)?$/i;
 const REDDIT_HOST_RE = /(^|\.)reddit\.com$/i;
 const REDDIT_SHORT_RE = /^redd\.it$/i;
+const YOUTUBE_EMBED_RE = /^https?:\/\/(?:www\.)?youtube\.com\/embed\//i;
 
 function isImageUrl(value = '') {
 	return IMAGE_SRC_RE.test(String(value || '').trim());
@@ -81,6 +83,29 @@ function getPreviewMediaMode(item: any = {}) {
 	return { type: 'unknown', src: rawSrc };
 }
 
+function normalizeExplicitPreviewMedia(item: any = {}) {
+	const rawType = String(item?.previewMedia?.type || '')
+		.trim()
+		.toLowerCase();
+	const rawSrc = String(item?.previewMedia?.src || '').trim();
+	if (!rawSrc) return null;
+
+	if (rawType === 'video' && isDirectVideoUrl(rawSrc)) {
+		return { type: 'video', src: rawSrc };
+	}
+
+	if (rawType === 'youtube-embed' && YOUTUBE_EMBED_RE.test(rawSrc)) {
+		return { type: 'iframe', src: rawSrc };
+	}
+
+	if (rawType === 'reddit-embed') {
+		const redditEmbedUrl = buildRedditEmbedUrl(item?.commentsLink || rawSrc);
+		return redditEmbedUrl ? { type: 'reddit-embed', src: redditEmbedUrl } : null;
+	}
+
+	return null;
+}
+
 function normalizeCardPreviewImages(item: any = {}) {
 	const seen = new Set();
 	const candidates = [...(Array.isArray(item?.previewImages) ? item.previewImages : []), item?.previewImage];
@@ -122,11 +147,13 @@ function FeedCard({
 
 	const previewImages = useMemo(() => normalizeCardPreviewImages(item), [item]);
 	const previewImage = !hidePreviewImage ? previewImages[activePreviewIndex] || item?.previewImage || null : null;
-	const previewMedia = useMemo(() => getPreviewMediaMode({ ...item, previewImage }), [item, previewImage]);
+	const explicitPreviewMedia = useMemo(() => normalizeExplicitPreviewMedia(item), [item]);
+	const previewMedia = useMemo(() => explicitPreviewMedia || getPreviewMediaMode({ ...item, previewImage }), [explicitPreviewMedia, item, previewImage]);
 	const isImagePreview = previewMedia.type === 'image';
 	const isImageCarousel = isImagePreview && previewImages.length > 1;
-	const previewMediaUrl = previewMedia.type === 'video' || previewMedia.type === 'reddit-embed' ? previewMedia.src : '';
+	const previewMediaUrl = previewMedia.type === 'video' || previewMedia.type === 'reddit-embed' || previewMedia.type === 'iframe' ? previewMedia.src : '';
 	const imageSrc = useMemo(() => (isImagePreview && previewImage?.src ? unescapeHtml(previewImage.src) : ''), [isImagePreview, previewImage?.src]);
+	const hasPreviewMedia = Boolean((isImagePreview && imageSrc) || previewMediaUrl);
 	const sourceHref = getFeedSourceHref(item);
 	const summaryText = String(item?.summary || '').trim();
 	const isFullStoryInComments = /\bfull story\b.*\bcomments?\b/i.test(summaryText);
@@ -249,7 +276,7 @@ function FeedCard({
 						{item.title}
 					</a>
 				:	<span className={titleClassName}>{item.title}</span>}
-				{previewImage && (imageSrc || previewMediaUrl) && (
+				{hasPreviewMedia && (
 					<div className={`context-feed-preview ${isPreviewExpanded ? 'is-expanded' : 'is-collapsed'}`}>
 						{isImagePreview ?
 							<>
@@ -327,11 +354,12 @@ function FeedCard({
 										muted
 										preload='metadata'
 										src={previewMediaUrl}
-										aria-label={previewImage.alt || item.title || 'Embedded video'}
+										poster={previewImages[0]?.src || undefined}
+										aria-label={item?.previewMedia?.alt || previewImage?.alt || item.title || 'Embedded video'}
 									/>
 								:	<iframe
 										loading='lazy'
-										title={previewImage.alt || item.title || 'Embedded video'}
+										title={item?.previewMedia?.alt || previewImage?.alt || item.title || 'Embedded video'}
 										src={previewMediaUrl}
 										sandbox='allow-scripts allow-same-origin allow-popups allow-forms'
 									/>

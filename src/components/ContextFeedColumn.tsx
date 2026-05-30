@@ -141,6 +141,9 @@ function buildFeedItemHydrationSignature(item: any = {}) {
 		previewImageSrc: item?.previewImage?.src || '',
 		previewImageAlt: item?.previewImage?.alt || '',
 		previewImages: Array.isArray(item?.previewImages) ? item.previewImages.map((image: any) => ({ src: image?.src || '', alt: image?.alt || '' })) : [],
+		previewMediaType: item?.previewMedia?.type || '',
+		previewMediaSrc: item?.previewMedia?.src || '',
+		previewMediaAlt: item?.previewMedia?.alt || '',
 		originalLink: item?.originalLink || '',
 		commentsLink: item?.commentsLink || '',
 		tags: Array.isArray(item?.tags) ? item.tags : [],
@@ -211,6 +214,7 @@ function ContextFeedColumn({
 	draftTagValue,
 	onDraftTagChange,
 	itemFilter,
+	showAllWhenNoTag = false,
 }: any) {
 	const [draftTag, setDraftTag] = useState('');
 	const [tagActionError, setTagActionError] = useState('');
@@ -227,9 +231,6 @@ function ContextFeedColumn({
 
 	const incomingFilteredNewsItems = useMemo(() => {
 		const normalizedActiveTag = normalizeTagKeyword(activeTag);
-		if (!normalizedActiveTag) {
-			return [];
-		}
 
 		const sourceItems = Array.isArray(monitor.matches) ? monitor.matches : [];
 		const contextItems = getContextItems(monitor, contextFilter);
@@ -240,6 +241,15 @@ function ContextFeedColumn({
 
 			return matchesContext && passesCustomFilter && !isSuppressedLiveFeedItem(item) && !isFutureDatedFeedItem(item);
 		});
+
+		// If no active tag and caller wants the 'all news' feed, return top items
+		if (!normalizedActiveTag && showAllWhenNoTag) {
+			return sortFeedItemsNewestFirst(newsItems, { preferCurrentUpdates: true, getPriority: getLiveFeedRecencyPriority }).slice(0, laneItemLimit);
+		}
+
+		if (!normalizedActiveTag) {
+			return [];
+		}
 
 		const matchingItems = newsItems.filter((item: any) => {
 			const matchedKeywords = Array.isArray(item?.matchedKeywords) ? item.matchedKeywords.map((keyword: any) => normalizeTagKeyword(keyword)) : [];
@@ -252,7 +262,7 @@ function ContextFeedColumn({
 			return matchesTagExpression(searchableText, normalizedActiveTag);
 		});
 		return sortFeedItemsNewestFirst(matchingItems, { preferCurrentUpdates: true, getPriority: getLiveFeedRecencyPriority }).slice(0, laneItemLimit);
-	}, [activeTag, contextFilter, laneItemLimit, monitor.contexts, monitor.matches]);
+	}, [activeTag, contextFilter, laneItemLimit, monitor.contexts, monitor.matches, showAllWhenNoTag]);
 	const isLoadingMoreMatches = Boolean(progressiveFeedState.active) && (progressiveFeedState.matchesLoadedCount || 0) < (progressiveFeedState.matchesTotal || 0);
 	const isWaitingForMatchingItems = Boolean(activeTag) && isLoadingMoreMatches && incomingFilteredNewsItems.length === 0;
 

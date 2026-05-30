@@ -127,6 +127,26 @@ test('skips non-renderable inline data-uri images from previewable image entries
 	assert.doesNotMatch(imageContext.text, /Tracker pixel/i);
 });
 
+test('extracts direct linked image assets when pages expose media without img tags', () => {
+	const html = `
+		<html>
+			<body>
+				<article>
+					<p>Reddit self post with image link only</p>
+					<a href="https://i.redd.it/p7tyhmatq64h1.png" title="Ebola-chan! (2014)">view full image</a>
+				</article>
+			</body>
+		</html>
+	`;
+
+	const imageContext = extractImageContextMetadata(html, 'https://old.reddit.com/r/PandemicChan/comments/1trn5ic/ebolachan_2014/');
+
+	assert.equal(imageContext.entries.length, 1);
+	assert.equal(imageContext.renderableEntries.length, 1);
+	assert.equal(imageContext.renderableEntries[0].src, 'https://i.redd.it/p7tyhmatq64h1.png');
+	assert.match(imageContext.renderableEntries[0].alt, /Ebola-chan!/i);
+});
+
 test('filters logos, navigation, footer, and social images from extracted image context', () => {
 	const html = `
 		<html>

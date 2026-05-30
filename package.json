@@ -17,7 +17,6 @@
 		"dev:server": "node ./scripts/kill-ports.js 3001 && pnpm --dir server run dev",
 		"stop": "node ./scripts/kill-ports.js 3000 3001",
 		"collect-okcounty": "node ./scripts/okcounty-collect.js",
-		"update:stock-symbols": "node ./scripts/update-stock-symbols.js",
 		"build": "next build",
 		"preview": "pnpm run start:app"
 	},

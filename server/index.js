@@ -2,8 +2,7 @@ import 'dotenv/config';
 import express from 'express';
 import cors from 'cors';
 import helmet from 'helmet';
-import { texasRouter } from './routes/texas.js';
-import { oscnRouter } from './routes/oscn.js';
+// state-specific route files removed per user request
 import { rssRouter } from './routes/rss.js';
 import { contextRouter } from './routes/context.js';
 import { startContextFeedMonitor } from './services/context/contextFeedService.js';
@@ -46,8 +45,9 @@ app.use(express.json({ limit: '2mb' }));
 app.use('/api/', apiLimiter);
 
 // Routes
-app.use('/api/texas', texasRouter);
-app.use('/api/oscn', oscnRouter);
+// State-specific routes unmounted per user request
+// app.use('/api/texas', texasRouter);
+// app.use('/api/oscn', oscnRouter);
 app.use('/api/rss', rssRouter);
 // X/Twitter scraper routes removed per user request (references to x.com/twitter disabled)
 app.use('/api/context', contextRouter);

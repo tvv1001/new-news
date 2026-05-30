@@ -1,7 +1,7 @@
 'use client';
 
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { addContextTags, fetchContextMonitor, replaceContextTags } from '../api';
+import { addContextTags, fetchContextMonitor, removeContextTags } from '../api';
 import ContextFeedColumn from './ContextFeedColumn';
 import { normalizeContextTagForSync } from './contextFeedTagUtils';
 
@@ -116,14 +116,6 @@ function normalizeTagList(tags: any[] = []) {
 	return [...new Set((Array.isArray(tags) ? tags : []).map((tag) => normalizeContextTagForSync(tag)).filter(Boolean))].sort((left: any, right: any) => left.localeCompare(right));
 }
 
-function haveContextTagsChanged(left: any[] = [], right: any[] = []) {
-	const normalizedLeft = normalizeTagList(left);
-	const normalizedRight = normalizeTagList(right);
-	if (normalizedLeft.length !== normalizedRight.length) return true;
-
-	return normalizedLeft.some((tag, index) => tag !== normalizedRight[index]);
-}
-
 function hasLiveLaneSnapshotReady(monitor: any = {}) {
 	if (!monitor || typeof monitor !== 'object') return false;
 	if (monitor.lastError) return true;
@@ -138,10 +130,6 @@ function App() {
 	const [activeContextTag, setActiveContextTag] = useState('');
 	const [hasInitializedContextSelections, setHasInitializedContextSelections] = useState(false);
 	const [isRefreshing, setIsRefreshing] = useState(false);
-	const contextSyncSignatureRef = useRef('');
-	const contextSyncInFlightRef = useRef('');
-	const contextSyncRetryAtRef = useRef(0);
-	const contextSyncTimerRef = useRef<number | null>(null);
 	const sharedContextMonitor = useContextMonitor({ enabled: true });
 	const contextKeywords =
 		(sharedContextMonitor?.tags?.length ? sharedContextMonitor.tags : null) || (sharedContextMonitor?.keywords?.length ? sharedContextMonitor.keywords : null) || [];
@@ -174,65 +162,12 @@ function App() {
 
 	useEffect(() => {
 		if (!hasLoadedPersistedContextState || !hasInitializedContextSelections) return;
-		if (!sharedContextMonitor?.started) return;
+		if (!sharedContextMonitor?.started || !activeContextTag) return;
+		const availableTags = normalizeTagList(contextKeywords);
+		if (availableTags.includes(activeContextTag)) return;
 
-		const desiredTags = normalizeTagList([activeContextTag]);
-		const observedTags = normalizeTagList(contextKeywords);
-		const syncSignature = JSON.stringify({ desiredTags, observedTags });
-		const now = Date.now();
-		const debounceMs = 350;
-
-		if (contextSyncTimerRef.current) {
-			window.clearTimeout(contextSyncTimerRef.current);
-			contextSyncTimerRef.current = null;
-		}
-
-		if (contextSyncRetryAtRef.current > now) {
-			return;
-		}
-
-		if (contextSyncInFlightRef.current === syncSignature) {
-			return;
-		}
-
-		if (!haveContextTagsChanged(desiredTags, observedTags) && contextSyncSignatureRef.current === syncSignature) {
-			return;
-		}
-		let cancelled = false;
-
-		const syncContextTags = async () => {
-			contextSyncInFlightRef.current = syncSignature;
-			try {
-				await replaceContextTags(desiredTags);
-				if (cancelled) return;
-				contextSyncSignatureRef.current = JSON.stringify({ desiredTags, observedTags: desiredTags });
-				contextSyncRetryAtRef.current = 0;
-			} catch (syncError: any) {
-				if (cancelled) return;
-				if (syncError?.status === 429) {
-					contextSyncRetryAtRef.current = Date.now() + 5000;
-					return;
-				}
-				console.error('Unable to sync context tags.', syncError);
-			} finally {
-				if (contextSyncInFlightRef.current === syncSignature) {
-					contextSyncInFlightRef.current = '';
-				}
-			}
-		};
-
-		contextSyncTimerRef.current = window.setTimeout(() => {
-			void syncContextTags();
-		}, debounceMs);
-
-		return () => {
-			cancelled = true;
-			if (contextSyncTimerRef.current) {
-				window.clearTimeout(contextSyncTimerRef.current);
-				contextSyncTimerRef.current = null;
-			}
-		};
-	}, [activeContextTag, hasInitializedContextSelections, hasLoadedPersistedContextState, contextKeywords, sharedContextMonitor?.started]);
+		setActiveContextTag(availableTags[0] || '');
+	}, [activeContextTag, contextKeywords, hasInitializedContextSelections, hasLoadedPersistedContextState, sharedContextMonitor?.started]);
 
 	useEffect(() => {
 		if (!hasLoadedPersistedContextState || typeof window === 'undefined') return;
@@ -251,8 +186,16 @@ function App() {
 		setActiveContextTag(normalizedTag);
 	};
 
-	const handleClearPrimaryContextTag = () => {
-		setActiveContextTag('');
+	const handleClearPrimaryContextTag = async () => {
+		const tagToRemove = normalizeContextTagForSync(activeContextTag);
+		if (!tagToRemove) {
+			setActiveContextTag('');
+			return;
+		}
+
+		await removeContextTags([tagToRemove]);
+		const remainingTags = normalizeTagList(contextKeywords).filter((tag) => tag !== tagToRemove);
+		setActiveContextTag(remainingTags[0] || '');
 	};
 
 	const handleRefresh = async () => {
